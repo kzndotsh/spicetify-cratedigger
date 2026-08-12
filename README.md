@@ -11,7 +11,7 @@
 
 ## About
 
-As a Spotify user who's obsessed with curating playlists and exploring music, I knew this experience could be drastically improved. Typically when I am "crate digging", it goes something like: find song -> radio it -> enter rabbit hole -> find some playlist or new sub genre -> quickly listen to hundreds of songs at 5-10 seconds each -> possibly like/add to playlist -> repeat. The problem with this workflow however is that it's quite slow due to Spotify UI performance and the simple fact of having to use a GUI period. As a Linux window manager/terminal heavy person, this extension was the answer. Now, I can associate up to 9 playlists with keybinds, rapidly add songs to those playlists and continue digging without ever lifting my fingers.
+As a Spotify user who's obsessed with curating playlists and exploring music, I knew this experience could be drastically improved. Typically when I am "crate digging", it goes something like: find song → radio it → enter rabbit hole → find some playlist or new sub genre → quickly listen to hundreds of songs at 5–10 seconds each → possibly like/add to playlist → repeat. The problem with this workflow however is that it's quite slow due to Spotify UI performance and the simple fact of having to use a GUI period. As a Linux window manager/terminal heavy person, this extension was the answer. Now, I can associate up to 9 playlists with keybinds, rapidly add songs to those playlists and continue digging without ever lifting my fingers.
 
 ## Install
 
