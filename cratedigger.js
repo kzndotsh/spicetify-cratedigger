@@ -13,52 +13,12 @@
   const SLOT_KEYS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"];
   const STORAGE_SLOTS = "cratedigger:slots";
   const STORAGE_SETTINGS = "cratedigger:settings";
-  const THEME = {
-    surface: "var(--spice-card, #16161e)",
-    text: "var(--spice-subtext, #c0caf5)",
-    muted: "#565f89",
-    hover: "var(--spice-tab-active, #27384e)",
-    border: "var(--spice-notification, #414868)",
-    accent: "var(--spice-button, #2ac3de)",
-    radius: "4px",
-  };
 
   const playlistTracks = new Map();
+
   let closeActivePicker = () => {};
   let membershipEl = null;
   let membershipGen = 0;
-
-  function el(tag, opts = {}) {
-    const node = document.createElement(tag);
-    const { style, text, children, dataset, on, ...props } = opts;
-    if (text != null) node.textContent = text;
-    if (style) Object.assign(node.style, style);
-    if (dataset) Object.assign(node.dataset, dataset);
-    for (const [key, value] of Object.entries(props)) {
-      if (value != null) node[key] = value;
-    }
-    if (on) {
-      for (const [event, handler] of Object.entries(on)) {
-        node.addEventListener(event, handler);
-      }
-    }
-    if (children) for (const child of children) node.appendChild(child);
-    return node;
-  }
-
-  function fieldStyle(node) {
-    Object.assign(node.style, {
-      background: THEME.surface,
-      color: THEME.text,
-      border: "1px solid " + THEME.border,
-      borderRadius: THEME.radius,
-    });
-    return node;
-  }
-
-  function notify(message, isError) {
-    showNotification(message, Boolean(isError));
-  }
 
   // LocalStorageAPI is per Spotify account. LocalStorage is the unscoped fallback.
   function storageGet(key) {
@@ -66,6 +26,7 @@
       const api = Platform.LocalStorageAPI;
       const raw = api?.getItem ? api.getItem(key) : LocalStorage.get(key);
       if (raw == null || raw === "") return null;
+
       return typeof raw === "string" ? JSON.parse(raw) : raw;
     } catch (err) {
       console.error("cratedigger: storageGet", key, err);
@@ -92,9 +53,74 @@
 
   function saveSlots(slots) {
     storageSet(STORAGE_SLOTS, slots);
+
     playlistTracks.clear();
     renderHud();
     refreshMembership();
+  }
+
+  // Left/Right: stock Spotify shortcuts are broken on Linux.
+  function bindPrevent(trap, combo, handler) {
+    trap.bind(combo, (event) => {
+      event.preventDefault();
+      handler();
+      return false;
+    });
+  }
+
+  function bindKeys() {
+    const trap = Mousetrap;
+
+    for (const key of SLOT_KEYS) {
+      bindPrevent(trap, key, () => addCurrentToSlot(key, false));
+      bindPrevent(trap, `shift+${key}`, () => addCurrentToSlot(key, true));
+    }
+
+    bindPrevent(trap, "left", () => Player.back());
+    bindPrevent(trap, "right", () => Player.next());
+
+    bindPrevent(trap, "l", () => {
+      const wasLiked = Player.getHeart();
+      Player.setHeart(!wasLiked);
+      showNotification(wasLiked ? "Unliked" : "Liked");
+    });
+  }
+
+  async function addCurrentToSlot(slotKey, skipAfter) {
+    const trackUri = Player.data?.item?.uri || "";
+    if (!trackUri) {
+      showNotification("No track playing", true);
+      return;
+    }
+
+    const slot = loadSlots()[slotKey];
+    if (!slot?.uri) {
+      showNotification(`Slot ${slotKey} is unbound`, true);
+      return;
+    }
+
+    if (!Platform.PlaylistAPI?.add) {
+      showNotification("Crate Digger: PlaylistAPI missing", true);
+      return;
+    }
+
+    try {
+      await Platform.PlaylistAPI.add(slot.uri, [trackUri], { after: "end" });
+      playlistTracks.get(slot.uri)?.add(trackUri);
+
+      let message = `Added to ${slot.name || "playlist"}`;
+      if (loadSettings().likeCleaner && Player.getHeart()) {
+        Player.setHeart(false);
+        message += " - unliked";
+      }
+
+      showNotification(message);
+      flashHudSlot(slotKey);
+      refreshMembership();
+      if (skipAfter) Player.next();
+    } catch (err) {
+      showNotification(String(err?.message || err), true);
+    }
   }
 
   // RootlistAPI walks folders. Top-level LibraryAPI misses nested playlists.
@@ -120,6 +146,7 @@
       includeLikedSongs: false,
       includeLocalFiles: false,
     });
+
     const out = [];
     for (const item of res?.items ?? []) {
       if (item.type === "playlist" && item.canAddTo !== false) {
@@ -139,54 +166,21 @@
       } else if (Platform.LibraryAPI?.getContents) {
         collected.push(...(await fetchFromLibrary("")));
       } else {
-        notify("Crate Digger: cannot list playlists", true);
+        showNotification("Crate Digger: cannot list playlists", true);
         return [];
       }
+
       const byUri = new Map();
       for (const playlist of collected) {
         if (!byUri.has(playlist.uri)) byUri.set(playlist.uri, playlist);
       }
+
       return [...byUri.values()].sort((a, b) =>
-        a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
+        a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
       );
     } catch (err) {
-      notify(String(err?.message || err), true);
+      showNotification(String(err?.message || err), true);
       return [];
-    }
-  }
-
-  async function addCurrentToSlot(slotKey, skipAfter) {
-    const trackUri = Player.data?.item?.uri || "";
-    if (!trackUri) {
-      notify("No track playing", true);
-      return;
-    }
-
-    const slot = loadSlots()[slotKey];
-    if (!slot?.uri) {
-      notify("Slot " + slotKey + " is unbound", true);
-      return;
-    }
-
-    if (!Platform.PlaylistAPI?.add) {
-      notify("Crate Digger: PlaylistAPI missing", true);
-      return;
-    }
-
-    try {
-      await Platform.PlaylistAPI.add(slot.uri, [trackUri], { after: "end" });
-      playlistTracks.get(slot.uri)?.add(trackUri);
-      let message = "Added to " + (slot.name || "playlist");
-      if (loadSettings().likeCleaner && Player.getHeart()) {
-        Player.setHeart(false);
-        message += " · unliked";
-      }
-      notify(message);
-      flashHudSlot(slotKey);
-      refreshMembership();
-      if (skipAfter) Player.next();
-    } catch (err) {
-      notify(String(err?.message || err), true);
     }
   }
 
@@ -194,47 +188,49 @@
   function positionListBelow(list, input) {
     const rect = input.getBoundingClientRect();
     const spaceBelow = window.innerHeight - rect.bottom - 8;
-    const maxHeight = Math.min(280, Math.max(140, spaceBelow));
+
     Object.assign(list.style, {
-      left: rect.left + "px",
-      width: rect.width + "px",
-      top: rect.bottom + 4 + "px",
-      maxHeight: maxHeight + "px",
+      left: `${rect.left}px`,
+      width: `${rect.width}px`,
+      top: `${rect.bottom + 4}px`,
+      maxHeight: `${Math.min(280, Math.max(140, spaceBelow))}px`,
     });
   }
 
-  function createPicker(playlists, current, onChange) {
-    const input = fieldStyle(
-      el("input", {
-        type: "search",
-        autocomplete: "off",
-        placeholder: "Search playlists…",
-        value: current?.name || "",
-        style: { flex: "1", minWidth: "0", padding: "6px 8px", colorScheme: "dark" },
-      })
-    );
+  function picker(playlists, current, onChange) {
+    const wrap = document.createElement("div");
+    wrap.style.flex = "1";
+    wrap.style.minWidth = "0";
 
-    const clear = fieldStyle(
-      el("button", {
-        type: "button",
-        text: "×",
-        title: "Unbind",
-        style: { width: "32px", cursor: "pointer" },
-      })
-    );
+    const row = document.createElement("div");
+    row.style.display = "flex";
+    row.style.gap = "6px";
 
-    const list = fieldStyle(
-      el("div", {
-        style: {
-          display: "none",
-          position: "fixed",
-          zIndex: "100000",
-          overflowY: "auto",
-          padding: "4px 0",
-          boxShadow: "0 12px 32px rgba(0, 0, 0, 0.55)",
-        },
-      })
-    );
+    const input = document.createElement("input");
+    input.type = "search";
+    input.autocomplete = "off";
+    input.placeholder = "Search playlists...";
+    input.value = current?.name || "";
+    input.style.cssText =
+      "flex:1;min-width:0;padding:6px 8px;color-scheme:dark;" +
+      "background:var(--spice-card);color:var(--spice-text);" +
+      "border:1px solid rgba(var(--spice-rgb-text),.2);border-radius:4px";
+
+    const clear = document.createElement("button");
+    clear.type = "button";
+    clear.textContent = "×";
+    clear.title = "Unbind";
+    clear.style.cssText =
+      "width:32px;cursor:pointer;" +
+      "background:var(--spice-card);color:var(--spice-text);" +
+      "border:1px solid rgba(var(--spice-rgb-text),.2);border-radius:4px";
+
+    const list = document.createElement("div");
+    list.style.cssText =
+      "display:none;position:fixed;z-index:100000;overflow-y:auto;padding:4px 0;" +
+      "box-shadow:0 12px 32px rgba(var(--spice-rgb-shadow),.55);" +
+      "background:var(--spice-card);color:var(--spice-text);" +
+      "border:1px solid rgba(var(--spice-rgb-text),.2);border-radius:4px";
 
     function setBound(slot) {
       current = slot;
@@ -247,65 +243,61 @@
       list.remove();
     }
 
-    function matchesQuery(filter) {
-      const query = (filter || "").trim().toLowerCase();
-      if (!query) return playlists;
-      return playlists.filter(
-        (playlist) =>
-          playlist.name.toLowerCase().includes(query) || playlist.uri.toLowerCase().includes(query)
-      );
-    }
-
     function renderList(filter) {
       list.replaceChildren();
-      const matches = matchesQuery(filter);
-      list.appendChild(
-        el("div", {
-          text: matches.length + " playlist" + (matches.length === 1 ? "" : "s"),
-          style: { padding: "4px 8px", color: THEME.muted, fontSize: "12px" },
-        })
-      );
-      if (matches.length === 0) {
-        list.appendChild(
-          el("div", { text: "No matches", style: { padding: "8px", color: THEME.muted } })
-        );
+      const query = (filter || "").trim().toLowerCase();
+      const matches = !query
+        ? playlists
+        : playlists.filter(
+            (p) => p.name.toLowerCase().includes(query) || p.uri.toLowerCase().includes(query),
+          );
+
+      const meta = document.createElement("div");
+      meta.style.cssText = "padding:4px 8px;color:var(--spice-subtext);font-size:12px";
+      meta.textContent = `${matches.length} playlist${matches.length === 1 ? "" : "s"}`;
+      list.appendChild(meta);
+
+      if (!matches.length) {
+        const empty = document.createElement("div");
+        empty.style.cssText = "padding:8px;color:var(--spice-subtext)";
+        empty.textContent = "No matches";
+        list.appendChild(empty);
         return;
       }
+
       for (const playlist of matches) {
         const selected = current?.uri === playlist.uri;
-        const btn = el("button", {
-          type: "button",
-          text: playlist.name,
-          style: {
-            display: "block",
-            width: "100%",
-            textAlign: "left",
-            padding: "8px",
-            border: "none",
-            background: selected ? THEME.hover : "transparent",
-            color: THEME.text,
-            cursor: "pointer",
-          },
-        });
-        btn.addEventListener("mouseenter", () => {
-          btn.style.background = THEME.hover;
-        });
-        btn.addEventListener("mouseleave", () => {
-          btn.style.background = current?.uri === playlist.uri ? THEME.hover : "transparent";
-        });
-        btn.addEventListener("mousedown", (event) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = playlist.name;
+        btn.style.cssText =
+          "display:block;width:100%;text-align:left;padding:8px;border:none;cursor:pointer;" +
+          "color:var(--spice-text);background:" +
+          (selected ? "var(--spice-tab-active)" : "transparent");
+
+        btn.onmouseenter = () => {
+          btn.style.background = "var(--spice-tab-active)";
+        };
+        btn.onmouseleave = () => {
+          btn.style.background =
+            current?.uri === playlist.uri ? "var(--spice-tab-active)" : "transparent";
+        };
+        btn.onmousedown = (event) => {
           event.preventDefault(); // keep focus; blur would close the list first
           setBound(playlist);
           hideList();
-        });
+        };
+
         list.appendChild(btn);
       }
     }
 
     function showList() {
       closeActivePicker();
+
       const typing = input.value !== (current?.name || "");
       renderList(typing ? input.value : "");
+
       document.body.appendChild(list);
       list.style.display = "block";
       positionListBelow(list, input);
@@ -331,84 +323,51 @@
       hideList();
     });
 
-    return el("div", {
-      style: { flex: "1", minWidth: "0" },
-      children: [
-        el("div", {
-          style: { display: "flex", gap: "6px" },
-          children: [input, clear],
-        }),
-      ],
-    });
-  }
-
-  function createLikeCleanerToggle() {
-    const box = el("input", {
-      type: "checkbox",
-      checked: loadSettings().likeCleaner,
-      style: { marginTop: "3px" },
-    });
-    box.addEventListener("change", () => {
-      storageSet(STORAGE_SETTINGS, { ...loadSettings(), likeCleaner: box.checked });
-    });
-    return el("label", {
-      style: {
-        display: "flex",
-        alignItems: "flex-start",
-        gap: "10px",
-        marginBottom: "16px",
-        cursor: "pointer",
-      },
-      children: [
-        box,
-        el("span", {
-          children: [
-            el("div", { text: "Like cleaner", style: { fontWeight: "600" } }),
-            el("div", {
-              text: "Unlike after sorting a liked track into a playlist",
-              style: { color: THEME.muted, fontSize: "12px" },
-            }),
-          ],
-        }),
-      ],
-    });
-  }
-
-  function createSlotRow(key, playlists, current) {
-    return el("div", {
-      style: { display: "flex", alignItems: "flex-start", gap: "12px", margin: "8px 0" },
-      children: [
-        el("span", {
-          text: key,
-          style: {
-            width: "1.5em",
-            marginTop: "6px",
-            fontWeight: "700",
-            fontVariantNumeric: "tabular-nums",
-          },
-        }),
-        createPicker(playlists, current, (slot) => {
-          const next = loadSlots();
-          next[key] = slot;
-          saveSlots(next);
-        }),
-      ],
-    });
+    row.append(input, clear);
+    wrap.appendChild(row);
+    return wrap;
   }
 
   async function openSettings() {
     closeActivePicker();
-    const root = el("div", {
-      style: { color: THEME.text, padding: "4px 0", maxHeight: "70vh", overflowY: "auto" },
-    });
-    root.appendChild(
-      el("p", {
-        text: "Type to search. Number key adds to that playlist. Shift+number adds and skips.",
-        style: { color: THEME.muted, marginBottom: "16px" },
-      })
-    );
-    root.appendChild(createLikeCleanerToggle());
-    const loading = el("p", { text: "Loading playlists…" });
+
+    const root = document.createElement("div");
+    root.style.cssText = "color:var(--spice-text);padding:4px 0;max-height:70vh;overflow-y:auto";
+
+    const hint = document.createElement("p");
+    hint.style.cssText = "color:var(--spice-subtext);margin-bottom:16px";
+    hint.textContent =
+      "Type to search. Number key adds to that playlist. Shift+number adds and skips.";
+    root.appendChild(hint);
+
+    const toggle = document.createElement("label");
+    toggle.style.cssText =
+      "display:flex;align-items:flex-start;gap:10px;margin-bottom:16px;cursor:pointer";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = loadSettings().likeCleaner;
+    box.style.marginTop = "3px";
+    box.onchange = () => {
+      storageSet(STORAGE_SETTINGS, {
+        ...loadSettings(),
+        likeCleaner: box.checked,
+      });
+    };
+
+    const copy = document.createElement("span");
+    const title = document.createElement("div");
+    title.style.fontWeight = "600";
+    title.textContent = "Like cleaner";
+    const desc = document.createElement("div");
+    desc.style.cssText = "color:var(--spice-subtext);font-size:12px";
+    desc.textContent = "Unlike after sorting a liked track into a playlist";
+    copy.append(title, desc);
+
+    toggle.append(box, copy);
+    root.appendChild(toggle);
+
+    const loading = document.createElement("p");
+    loading.textContent = "Loading playlists...";
     root.appendChild(loading);
 
     PopupModal.display({ title: TITLE, content: root, isLarge: true });
@@ -416,39 +375,29 @@
     const slots = loadSlots();
     const playlists = await fetchWritablePlaylists();
     loading.remove();
-    root.appendChild(
-      el("p", {
-        text: playlists.length + " playlists",
-        style: { color: THEME.muted, marginBottom: "12px" },
-      })
-    );
-    for (const key of SLOT_KEYS) {
-      root.appendChild(createSlotRow(key, playlists, slots[key]));
-    }
-  }
 
-  // Left/Right: stock Spotify shortcuts are broken on Linux.
-  function bindPrevent(trap, combo, handler) {
-    trap.bind(combo, (event) => {
-      event.preventDefault();
-      handler();
-      return false;
-    });
-  }
+    const count = document.createElement("p");
+    count.style.cssText = "color:var(--spice-subtext);margin-bottom:12px";
+    count.textContent = `${playlists.length} playlists`;
+    root.appendChild(count);
 
-  function bindKeys() {
-    const trap = Mousetrap;
     for (const key of SLOT_KEYS) {
-      bindPrevent(trap, key, () => addCurrentToSlot(key, false));
-      bindPrevent(trap, "shift+" + key, () => addCurrentToSlot(key, true));
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;align-items:flex-start;gap:12px;margin:8px 0";
+      const label = document.createElement("span");
+      label.style.cssText =
+        "width:1.5em;margin-top:6px;font-weight:700;font-variant-numeric:tabular-nums";
+      label.textContent = key;
+      row.append(
+        label,
+        picker(playlists, slots[key], (slot) => {
+          const next = loadSlots();
+          next[key] = slot;
+          saveSlots(next);
+        }),
+      );
+      root.appendChild(row);
     }
-    bindPrevent(trap, "left", () => Player.back());
-    bindPrevent(trap, "right", () => Player.next());
-    bindPrevent(trap, "l", () => {
-      const wasLiked = Player.getHeart();
-      Player.setHeart(!wasLiked);
-      notify(wasLiked ? "Unliked" : "Liked");
-    });
   }
 
   // Insert before .player-controls (seek is below them). Inserting before .playback-bar
@@ -458,90 +407,74 @@
     const seek =
       document.querySelector(".playback-bar") ||
       document.querySelector('[data-testid="playback-progressbar"]')?.closest(".playback-bar");
+
     if (controls && seek && controls.parentElement === seek.parentElement) {
       const seekFirst = controls.compareDocumentPosition(seek) & Node.DOCUMENT_POSITION_PRECEDING;
       return seekFirst ? seek : controls;
     }
+
     return controls || seek;
   }
 
   function flashHudSlot(slotKey) {
-    const chip = document.querySelector('#cratedigger-hud [data-slot="' + slotKey + '"]');
+    const chip = document.querySelector(`#cratedigger-hud [data-slot="${slotKey}"]`);
     if (!chip) return;
-    chip.style.background = THEME.hover;
-    chip.style.outline = "1px solid " + THEME.accent;
+
+    chip.style.background = "var(--spice-tab-active)";
+    chip.style.outline = "1px solid var(--spice-button)";
     setTimeout(() => {
       chip.style.background = "transparent";
       chip.style.outline = "none";
     }, 400);
   }
 
-  function createHudChip(key, slot) {
+  function hudChip(key, slot) {
     const bound = Boolean(slot?.uri);
-    return el("button", {
-      type: "button",
-      dataset: { slot: key },
-      title: bound ? "Slot " + key + ": " + slot.name : "Slot " + key + " unbound — click to bind",
-      style: {
-        display: "inline-flex",
-        alignItems: "center",
-        gap: "4px",
-        maxWidth: "9.5em",
-        padding: "2px 6px",
-        border: "none",
-        borderRadius: THEME.radius,
-        background: "transparent",
-        color: bound ? THEME.text : THEME.muted,
-        cursor: "pointer",
-        font: "inherit",
-        fontSize: "11px",
-        lineHeight: "1.2",
-        whiteSpace: "nowrap",
-        overflow: "hidden",
-      },
-      on: { click: () => openSettings() },
-      children: [
-        el("span", {
-          text: "[" + key + "]",
-          style: {
-            color: bound ? THEME.accent : THEME.muted,
-            fontWeight: "700",
-            fontVariantNumeric: "tabular-nums",
-          },
-        }),
-        el("span", {
-          text: slot?.name || "—",
-          style: { minWidth: "0", overflow: "hidden", textOverflow: "ellipsis" },
-        }),
-      ],
-    });
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.dataset.slot = key;
+    btn.title = bound ? `Slot ${key}: ${slot.name}` : `Slot ${key} unbound - click to bind`;
+    btn.style.cssText =
+      "display:inline-flex;align-items:center;gap:4px;max-width:9.5em;padding:2px 6px;" +
+      "border:none;border-radius:4px;background:transparent;cursor:pointer;font:inherit;" +
+      "font-size:11px;line-height:1.2;white-space:nowrap;overflow:hidden;color:" +
+      (bound ? "var(--spice-text)" : "var(--spice-subtext)");
+    btn.onclick = () => openSettings();
+
+    const tag = document.createElement("span");
+    tag.style.cssText =
+      "font-weight:700;font-variant-numeric:tabular-nums;color:" +
+      (bound ? "var(--spice-button)" : "var(--spice-subtext)");
+    tag.textContent = `[${key}]`;
+
+    const name = document.createElement("span");
+    name.style.cssText = "min-width:0;overflow:hidden;text-overflow:ellipsis";
+    name.textContent = slot?.name || "-";
+
+    btn.append(tag, name);
+    return btn;
   }
 
   function renderHud() {
     const hud = document.getElementById("cratedigger-hud");
     if (!hud) return;
+
     const slots = loadSlots();
     hud.replaceChildren();
-    for (const key of SLOT_KEYS) hud.appendChild(createHudChip(key, slots[key]));
+    for (const key of SLOT_KEYS) hud.appendChild(hudChip(key, slots[key]));
   }
 
   function ensureHud() {
-    let hud = document.getElementById("cratedigger-hud");
-    if (hud) return hud;
-    return el("div", {
-      id: "cratedigger-hud",
-      style: {
-        display: "flex",
-        flexWrap: "wrap",
-        justifyContent: "center",
-        alignItems: "center",
-        gap: "2px 4px",
-        width: "100%",
-        padding: "2px 8px 4px",
-        boxSizing: "border-box",
-        pointerEvents: "auto",
-      },
-    });
+    const existing = document.getElementById("cratedigger-hud");
+    if (existing) return existing;
+
+    const hud = document.createElement("div");
+    hud.id = "cratedigger-hud";
+    hud.style.cssText =
+      "display:flex;flex-wrap:wrap;justify-content:center;align-items:center;" +
+      "gap:2px 4px;width:100%;padding:2px 8px 4px;box-sizing:border-box;pointer-events:auto";
+    return hud;
   }
 
   function mountHud() {
@@ -551,9 +484,11 @@
       setTimeout(mountHud, 400);
       return;
     }
+
     if (hud.parentElement !== anchor.parentElement || hud.nextElementSibling !== anchor) {
       anchor.parentElement.insertBefore(hud, anchor);
     }
+
     renderHud();
   }
 
@@ -563,6 +498,7 @@
       setTimeout(watchNowPlayingBar, 400);
       return;
     }
+
     new MutationObserver(() => {
       const anchor = findHudAnchor();
       const hud = document.getElementById("cratedigger-hud");
@@ -575,32 +511,24 @@
   function mountMembership() {
     const host = document.querySelector(".main-nowPlayingWidget-nowPlaying");
     if (!host) return null;
+
     if (!membershipEl) {
-      membershipEl = el("span", {
-        id: "cratedigger-membership",
-        style: {
-          display: "none",
-          padding: "0 4px",
-          fontSize: "12px",
-          fontWeight: "700",
-          fontVariantNumeric: "tabular-nums",
-          letterSpacing: "0.02em",
-          color: THEME.accent,
-          lineHeight: "1",
-          whiteSpace: "nowrap",
-          alignSelf: "center",
-          flexShrink: "0",
-          pointerEvents: "none",
-          userSelect: "none",
-        },
-      });
+      membershipEl = document.createElement("span");
+      membershipEl.id = "cratedigger-membership";
+      membershipEl.style.cssText =
+        "display:none;padding:0 4px;font-size:12px;font-weight:700;" +
+        "font-variant-numeric:tabular-nums;color:var(--spice-button);" +
+        "line-height:1;white-space:nowrap;align-self:center;flex-shrink:0;" +
+        "pointer-events:none;user-select:none";
     }
+
     const heart = host.querySelector(".control-button-heart, [data-testid='add-button']");
     if (heart) {
       if (membershipEl.previousElementSibling !== heart) heart.after(membershipEl);
     } else if (membershipEl.parentElement !== host) {
       host.appendChild(membershipEl);
     }
+
     return membershipEl;
   }
 
@@ -608,17 +536,23 @@
     const uris = new Set();
     const api = Platform.PlaylistAPI;
     if (!api?.getContents) return uris;
+
     const res = await api.getContents(playlistUri);
     for (const item of res?.items || []) {
       const uri = item?.uri || item?.itemMetadata?.uri || "";
       if (uri) uris.add(uri);
     }
+
     const total = res?.totalLength;
     const pageSize = res?.limit || (res?.items || []).length;
     if (!total || !pageSize || (res?.items || []).length >= total) return uris;
+
     for (let offset = (res.items || []).length; offset < total; offset += pageSize) {
       try {
-        const page = await api.getContents(playlistUri, { offset, limit: pageSize });
+        const page = await api.getContents(playlistUri, {
+          offset,
+          limit: pageSize,
+        });
         for (const item of page?.items || []) {
           const uri = item?.uri || item?.itemMetadata?.uri || "";
           if (uri) uris.add(uri);
@@ -656,6 +590,7 @@
         console.warn("cratedigger: contains", err);
       }
     }
+
     const cached = playlistTracks.get(playlistUri) || (await loadPlaylistTracks(playlistUri));
     return cached.has(trackUri);
   }
@@ -667,8 +602,9 @@
         const slot = slots[key];
         if (!slot?.uri) return;
         if (await playlistHasTrack(slot.uri, trackUri)) hits.push(key);
-      })
+      }),
     );
+
     hits.sort((a, b) => SLOT_KEYS.indexOf(a) - SLOT_KEYS.indexOf(b));
     return hits;
   }
@@ -679,36 +615,42 @@
       setTimeout(refreshMembership, 400);
       return;
     }
+
     const gen = ++membershipGen;
     const trackUri = Player.data?.item?.uri || "";
     const slots = loadSlots();
     if (!trackUri) {
-      node.title = "";
       node.textContent = "";
+      node.title = "";
       node.style.display = "none";
       return;
     }
+
     const hits = await slotKeysForTrack(trackUri, slots);
     if (gen !== membershipGen) return;
     if (!hits.length) {
-      node.title = "";
       node.textContent = "";
+      node.title = "";
       node.style.display = "none";
       return;
     }
-    node.textContent = hits.map((key) => "[" + key + "]").join("");
-    node.title = "In " + hits.map((key) => "[" + key + "] " + (slots[key]?.name || "")).join(", ");
+
+    const labels = hits.map((key) => `[${key}] ${slots[key]?.name || ""}`);
+    node.textContent = hits.map((key) => `[${key}]`).join("");
+    node.title = `In ${labels.join(", ")}`;
     node.style.display = "";
   }
 
   bindKeys();
   mountHud();
   watchNowPlayingBar();
+
   if (Menu?.Item) new Menu.Item(TITLE, false, () => openSettings(), "playlist").register();
+
   Player.addEventListener("songchange", () => refreshMembership());
   refreshMembership();
 
   if (!Platform.PlaylistAPI) {
-    notify("Crate Digger: PlaylistAPI missing — playlist keys disabled", true);
+    showNotification("Crate Digger: PlaylistAPI missing - playlist keys disabled", true);
   }
 })();
