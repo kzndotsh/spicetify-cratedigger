@@ -7,7 +7,7 @@
 - Slot numbers appear next to Like when the track is already in a crate
 - Optional **Like cleaner**: unlike after sorting a liked track
 
-[![Screenshot](screenshot.png)](screenshot.png)
+[![Banner](banner.png)](banner.png)
 
 ## Install
 

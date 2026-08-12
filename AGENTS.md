@@ -19,7 +19,8 @@ Not a custom app. Not Spicetify Creator (deprecated). Not an npm package.
 | `manifest.json` | Marketplace card (`main` = `cratedigger.js`) |
 | `globals.d.ts` | Vendored editor types. Spotify does not load this. See below. |
 | `README.md` | User install (Marketplace / manual / Nix) |
-| `screenshot.png` | Marketplace preview (stub until replaced) |
+| `screenshot.png` | Marketplace preview (1024×1024) |
+| `banner.png` | GitHub README hero |
 | `LICENSE` | MIT |
 | `docs/` | Local research/specs. **Gitignored — do not publish.** |
 
