@@ -1,7 +1,7 @@
 /// <reference path="./globals.d.ts" />
 
 (function cratedigger() {
-  const { Player, Platform, Mousetrap, LocalStorage, Menu, PopupModal, Playbar, showNotification } =
+  const { Player, Platform, Mousetrap, LocalStorage, Menu, PopupModal, showNotification } =
     Spicetify;
 
   // Spicetify injects the script before Player/Platform/Mousetrap exist.
@@ -42,6 +42,8 @@
       progressBar: '[data-testid="playback-progressbar"]',
       playerControls: ".player-controls",
       nowPlayingBar: ".Root__now-playing-bar",
+      nowPlayingWidget: ".main-nowPlayingWidget-nowPlaying",
+      likeButton: ".control-button-heart, [data-testid='add-button']",
     },
     theme: {
       surface: "var(--spice-card, #16161e)",
@@ -71,10 +73,9 @@
       barPadding: "2px 8px 4px",
     },
     membership: {
-      iconSize: 16,
+      id: "cratedigger-membership",
       fontSize: "12px",
-      emptyLabel: "Not in a crate slot",
-      widgetPadding: "0 4px",
+      padding: "0 4px",
     },
     ui: {
       fieldPadding: "6px 8px",
@@ -101,8 +102,8 @@
   /** @type {Map<string, Set<string>>} */
   const playlistTracks = new Map();
   let closeActivePicker = () => {};
-  /** @type {{ widget: InstanceType<typeof Playbar.Widget>, label: HTMLSpanElement } | null} */
-  let membershipUi = null;
+  /** @type {HTMLSpanElement | null} */
+  let membershipEl = null;
   let membershipGen = 0; // drop stale membership checks after a fast skip
 
   /**
@@ -701,51 +702,54 @@
       setTimeout(watchNowPlayingBar, CONFIG.timing.mountRetryMs);
       return;
     }
-    // Spotify rebuilds the playbar on navigation; reattach if the HUD is orphaned.
+    // Spotify rebuilds the playbar on navigation; reattach if the HUD or membership text is orphaned.
     new MutationObserver(() => {
       const anchor = findHudAnchor();
       const hud = document.getElementById(CONFIG.hud.id);
       if (anchor && (!hud || hud.nextElementSibling !== anchor)) mountHud();
+      mountMembership();
     }).observe(root, { childList: true, subtree: true });
   }
 
   // ─── Membership ───
-  // Playbar.Widget sits next to Like. Constructor requires an icon; we strip the SVG and show slot tags.
+  // Plain text next to Like. Do not use Playbar.Widget — it clones heart-button classes.
 
-  function blankWidgetIcon() {
-    const size = CONFIG.membership.iconSize;
-    return '<svg width="' + size + '" height="' + size + '" viewBox="0 0 ' + size + " " + size + '"></svg>';
+  function mountMembership() {
+    const host = document.querySelector(CONFIG.selectors.nowPlayingWidget);
+    if (!host) return null;
+    if (!membershipEl) {
+      membershipEl = el("span", {
+        id: CONFIG.membership.id,
+        style: {
+          display: "none",
+          padding: CONFIG.membership.padding,
+          fontSize: CONFIG.membership.fontSize,
+          fontWeight: "700",
+          fontVariantNumeric: "tabular-nums",
+          letterSpacing: "0.02em",
+          color: THEME.accent,
+          lineHeight: "1",
+          whiteSpace: "nowrap",
+          alignSelf: "center",
+          flexShrink: "0",
+          pointerEvents: "none",
+          userSelect: "none",
+        },
+      });
+    }
+    const heart = host.querySelector(CONFIG.selectors.likeButton);
+    if (heart) {
+      if (membershipEl.previousElementSibling !== heart) heart.after(membershipEl);
+    } else if (membershipEl.parentElement !== host) {
+      host.appendChild(membershipEl);
+    }
+    return membershipEl;
   }
 
-  function ensureMembershipUi() {
-    if (membershipUi) return membershipUi;
-    if (!Playbar?.Widget) return null;
-    const widget = new Playbar.Widget(CONFIG.membership.emptyLabel, blankWidgetIcon(), () => {}, false, false);
-    widget.element.querySelector("svg")?.remove();
-    Object.assign(widget.element.style, {
-      width: "auto",
-      minWidth: "0",
-      padding: CONFIG.membership.widgetPadding,
-      display: "none",
-    });
-    const label = el("span", {
-      style: {
-        fontVariantNumeric: "tabular-nums",
-        fontWeight: "700",
-        fontSize: CONFIG.membership.fontSize,
-        color: THEME.accent,
-        letterSpacing: "0.02em",
-      },
-    });
-    widget.element.appendChild(label);
-    membershipUi = { widget, label };
-    return membershipUi;
-  }
-
-  function hideMembership(ui) {
-    ui.widget.label = CONFIG.membership.emptyLabel;
-    ui.widget.element.style.display = "none";
-    ui.label.textContent = "";
+  function hideMembership(node) {
+    node.title = "";
+    node.textContent = "";
+    node.style.display = "none";
   }
 
   async function collectPlaylistUris(playlistUri) {
@@ -822,27 +826,27 @@
   }
 
   async function refreshMembership() {
-    const ui = ensureMembershipUi();
-    if (!ui) return;
+    const node = mountMembership();
+    if (!node) {
+      setTimeout(refreshMembership, CONFIG.timing.mountRetryMs);
+      return;
+    }
     const gen = ++membershipGen;
     const trackUri = currentTrackUri();
     const slots = loadSlots();
     if (!trackUri) {
-      hideMembership(ui);
+      hideMembership(node);
       return;
     }
     const hits = await slotKeysForTrack(trackUri, slots);
     if (gen !== membershipGen) return; // skipped while this request was in flight
-    ui.widget.element.querySelector("svg")?.remove();
-    if (!ui.label.isConnected) ui.widget.element.appendChild(ui.label);
     if (!hits.length) {
-      hideMembership(ui);
+      hideMembership(node);
       return;
     }
-    ui.label.textContent = hits.map(formatSlotTag).join("");
-    ui.widget.label =
-      "In " + hits.map((key) => formatSlotTag(key) + " " + (slots[key]?.name || "")).join(", ");
-    ui.widget.element.style.display = "";
+    node.textContent = hits.map(formatSlotTag).join("");
+    node.title = "In " + hits.map((key) => formatSlotTag(key) + " " + (slots[key]?.name || "")).join(", ");
+    node.style.display = "";
   }
 
   function registerMenu() {

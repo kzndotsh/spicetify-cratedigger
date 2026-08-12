@@ -36,7 +36,7 @@ https://raw.githubusercontent.com/spicetify/cli/main/globals.d.ts
 curl -s -o globals.d.ts https://raw.githubusercontent.com/spicetify/cli/main/globals.d.ts
 ```
 
-Upstream updates irregularly (a few times a year, in bursts). No need to chase it for Player / Mousetrap / PlaylistAPI / Playbar / PopupModal.
+Upstream updates irregularly (a few times a year, in bursts). No need to chase it for Player / Mousetrap / PlaylistAPI / PopupModal.
 
 Tunables live in `CONFIG` at the top of `cratedigger.js` (theme, selectors, timings, storage keys, HUD). Do not scatter magic numbers.
 
@@ -73,7 +73,7 @@ Theme `tokyoNight` / `Night` on the desktop host.
 
 Playlist picker is `position: fixed` on `document.body` (native `<select>` clips). One picker open at a time.
 
-HUD injects as a sibling **before** `.player-controls` (or `.playback-bar` if that comes first), so it sits above the whole play cluster — not between play buttons and the seek bar. Membership widget is `Playbar.Widget` next to Like; hidden when the track is in no bound slot.
+HUD injects as a sibling **before** `.player-controls` (or `.playback-bar` if that comes first), so it sits above the whole play cluster — not between play buttons and the seek bar. Membership is a plain `<span>` after the Like button in `.main-nowPlayingWidget-nowPlaying` — not `Playbar.Widget` (that clones heart-button classes). Hidden when the track is in no bound slot.
 
 ## Local desktop (this machine)
 
