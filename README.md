@@ -78,7 +78,7 @@ Profile menu → **Crate Digger**. Bind a writable playlist per key. Saved per S
 
 **Like cleaner** (off by default): after a successful sort into a playlist, unlike the track if it was in Liked Songs.
 
-Click a HUD chip to open settings. The chip flashes when you dump a track into that slot.
+Click a HUD chip to add the current track (Shift+click matches Shift+digit). Bind playlists from the profile menu.
 
 ## License
 

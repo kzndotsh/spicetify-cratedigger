@@ -484,13 +484,16 @@
     const btn = document.createElement("button");
     btn.type = "button";
     btn.dataset.slot = key;
-    btn.title = bound ? `Slot ${key}: ${slot.name}` : `Slot ${key} unbound - click to bind`;
+    btn.title = bound ? `Slot ${key}: ${slot.name}` : `Slot ${key} unbound`;
     btn.style.cssText =
       "display:inline-flex;align-items:center;gap:4px;max-width:9.5em;padding:2px 6px;" +
       "border:none;border-radius:4px;background:transparent;cursor:pointer;font:inherit;" +
       "font-size:11px;line-height:1.2;white-space:nowrap;overflow:hidden;color:" +
       (bound ? "var(--spice-text)" : "var(--spice-subtext)");
-    btn.onclick = () => openSettings();
+    btn.onclick = (event) => {
+      const skip = event.shiftKey ? !loadSettings().invertShift : loadSettings().invertShift;
+      addCurrentToSlot(key, skip);
+    };
 
     const tag = document.createElement("span");
     tag.style.cssText =
