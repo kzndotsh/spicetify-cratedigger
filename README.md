@@ -6,6 +6,7 @@
 - HUD above the seek bar shows `[1] playlist  [2] playlist  …`
 - Slot numbers appear next to Like when the track is already in a crate
 - Optional **Like cleaner**: unlike after sorting a liked track
+- **Enabled** toggle in settings: park keys/HUD without uninstalling
 
 [![Banner](banner.png)](banner.png)
 
@@ -60,7 +61,7 @@ Ignored while typing in an input / textarea / select.
 | --- | ------ |
 | `1`–`9`, `0` | Add current track to that slot. Stay. |
 | `Shift+digit` | Add, then skip to next. |
-| `Left` / `Right` | Previous / next track |
+| `A` / `D` | Previous / next track |
 | `L` | Toggle like |
 
 Unbound slot or no track → error toast, no skip.
@@ -68,6 +69,8 @@ Unbound slot or no track → error toast, no skip.
 ## Settings
 
 Profile menu → **Crate Digger**. Bind a writable playlist per key. Saved per Spotify account in LocalStorage.
+
+**Enabled** (on by default): keys, HUD, and crate tags. Uncheck to park the extension; the profile menu stays so you can turn it back on.
 
 **Like cleaner** (off by default): after a successful sort into a playlist, unlike the track if it was in Liked Songs.
 

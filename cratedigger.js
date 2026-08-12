@@ -11,6 +11,7 @@
 
   const TITLE = "Crate Digger";
   const SLOT_KEYS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"];
+  const KEY_COMBOS = SLOT_KEYS.flatMap((key) => [key, `shift+${key}`]).concat(["a", "d", "l"]);
   const STORAGE_SLOTS = "cratedigger:slots";
   const STORAGE_SETTINGS = "cratedigger:settings";
 
@@ -44,7 +45,10 @@
 
   function loadSettings() {
     const parsed = storageGet(STORAGE_SETTINGS);
-    return { likeCleaner: Boolean(parsed?.likeCleaner) };
+    return {
+      enabled: parsed?.enabled !== false,
+      likeCleaner: Boolean(parsed?.likeCleaner),
+    };
   }
 
   function loadSlots() {
@@ -59,13 +63,17 @@
     refreshMembership();
   }
 
-  // Left/Right: stock Spotify shortcuts are broken on Linux.
+  // A/D: prev/next. Stock Left/Right are broken on Linux.
   function bindPrevent(trap, combo, handler) {
     trap.bind(combo, (event) => {
       event.preventDefault();
       handler();
       return false;
     });
+  }
+
+  function unbindKeys() {
+    for (const combo of KEY_COMBOS) Mousetrap.unbind(combo);
   }
 
   function bindKeys() {
@@ -76,8 +84,8 @@
       bindPrevent(trap, `shift+${key}`, () => addCurrentToSlot(key, true));
     }
 
-    bindPrevent(trap, "left", () => Player.back());
-    bindPrevent(trap, "right", () => Player.next());
+    bindPrevent(trap, "a", () => Player.back());
+    bindPrevent(trap, "d", () => Player.next());
 
     bindPrevent(trap, "l", () => {
       const wasLiked = Player.getHeart();
@@ -87,6 +95,8 @@
   }
 
   async function addCurrentToSlot(slotKey, skipAfter) {
+    if (!loadSettings().enabled) return;
+
     const trackUri = Player.data?.item?.uri || "";
     if (!trackUri) {
       showNotification("No track playing", true);
@@ -328,6 +338,30 @@
     return wrap;
   }
 
+  function settingToggle(heading, description, checked, onChange) {
+    const toggle = document.createElement("label");
+    toggle.style.cssText =
+      "display:flex;align-items:flex-start;gap:10px;margin-bottom:16px;cursor:pointer";
+
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = checked;
+    box.style.marginTop = "3px";
+    box.onchange = () => onChange(box.checked);
+
+    const copy = document.createElement("span");
+    const title = document.createElement("div");
+    title.style.fontWeight = "600";
+    title.textContent = heading;
+    const desc = document.createElement("div");
+    desc.style.cssText = "color:var(--spice-subtext);font-size:12px";
+    desc.textContent = description;
+    copy.append(title, desc);
+
+    toggle.append(box, copy);
+    return toggle;
+  }
+
   async function openSettings() {
     closeActivePicker();
 
@@ -337,34 +371,31 @@
     const hint = document.createElement("p");
     hint.style.cssText = "color:var(--spice-subtext);margin-bottom:16px";
     hint.textContent =
-      "Type to search. Number key adds to that playlist. Shift+number adds and skips.";
+      "Type to search. Number key adds to that playlist. Shift+number adds and skips. A/D previous/next.";
     root.appendChild(hint);
 
-    const toggle = document.createElement("label");
-    toggle.style.cssText =
-      "display:flex;align-items:flex-start;gap:10px;margin-bottom:16px;cursor:pointer";
-    const box = document.createElement("input");
-    box.type = "checkbox";
-    box.checked = loadSettings().likeCleaner;
-    box.style.marginTop = "3px";
-    box.onchange = () => {
-      storageSet(STORAGE_SETTINGS, {
-        ...loadSettings(),
-        likeCleaner: box.checked,
-      });
-    };
+    root.appendChild(
+      settingToggle(
+        "Enabled",
+        "Keys, HUD, and crate tags. Profile menu stays so you can turn it back on.",
+        loadSettings().enabled,
+        (on) => {
+          storageSet(STORAGE_SETTINGS, { ...loadSettings(), enabled: on });
+          applyEnabled();
+        },
+      ),
+    );
 
-    const copy = document.createElement("span");
-    const title = document.createElement("div");
-    title.style.fontWeight = "600";
-    title.textContent = "Like cleaner";
-    const desc = document.createElement("div");
-    desc.style.cssText = "color:var(--spice-subtext);font-size:12px";
-    desc.textContent = "Unlike after sorting a liked track into a playlist";
-    copy.append(title, desc);
-
-    toggle.append(box, copy);
-    root.appendChild(toggle);
+    root.appendChild(
+      settingToggle(
+        "Like cleaner",
+        "Unlike after sorting a liked track into a playlist",
+        loadSettings().likeCleaner,
+        (on) => {
+          storageSet(STORAGE_SETTINGS, { ...loadSettings(), likeCleaner: on });
+        },
+      ),
+    );
 
     const loading = document.createElement("p");
     loading.textContent = "Loading playlists...";
@@ -477,7 +508,16 @@
     return hud;
   }
 
+  function hideHud() {
+    document.getElementById("cratedigger-hud")?.remove();
+  }
+
   function mountHud() {
+    if (!loadSettings().enabled) {
+      hideHud();
+      return;
+    }
+
     const hud = ensureHud();
     const anchor = findHudAnchor();
     if (!anchor?.parentElement) {
@@ -500,6 +540,12 @@
     }
 
     new MutationObserver(() => {
+      if (!loadSettings().enabled) {
+        hideHud();
+        hideMembership();
+        return;
+      }
+
       const anchor = findHudAnchor();
       const hud = document.getElementById("cratedigger-hud");
       if (anchor && (!hud || hud.nextElementSibling !== anchor)) mountHud();
@@ -530,6 +576,14 @@
     }
 
     return membershipEl;
+  }
+
+  function hideMembership() {
+    if (!membershipEl) return;
+    membershipEl.textContent = "";
+    membershipEl.title = "";
+    membershipEl.style.display = "none";
+    membershipEl.remove();
   }
 
   async function collectPlaylistUris(playlistUri) {
@@ -610,6 +664,11 @@
   }
 
   async function refreshMembership() {
+    if (!loadSettings().enabled) {
+      hideMembership();
+      return;
+    }
+
     const node = mountMembership();
     if (!node) {
       setTimeout(refreshMembership, 400);
@@ -641,16 +700,27 @@
     node.style.display = "";
   }
 
-  bindKeys();
-  mountHud();
+  function applyEnabled() {
+    unbindKeys();
+    if (!loadSettings().enabled) {
+      hideHud();
+      hideMembership();
+      return;
+    }
+
+    bindKeys();
+    mountHud();
+    refreshMembership();
+  }
+
+  applyEnabled();
   watchNowPlayingBar();
 
   if (Menu?.Item) new Menu.Item(TITLE, false, () => openSettings(), "playlist").register();
 
   Player.addEventListener("songchange", () => refreshMembership());
-  refreshMembership();
 
-  if (!Platform.PlaylistAPI) {
+  if (!Platform.PlaylistAPI && loadSettings().enabled) {
     showNotification("Crate Digger: PlaylistAPI missing - playlist keys disabled", true);
   }
 })();
