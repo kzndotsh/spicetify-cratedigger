@@ -4,112 +4,30 @@
   const { Player, Platform, Mousetrap, LocalStorage, Menu, PopupModal, showNotification } =
     Spicetify;
 
-  // Spicetify injects the script before Player/Platform/Mousetrap exist.
-  const READY_POLL_MS = 100;
-
   if (!Player || !Platform || !Mousetrap) {
-    setTimeout(cratedigger, READY_POLL_MS);
+    setTimeout(cratedigger, 100);
     return;
   }
 
-  /** @typedef {{ uri: string, name: string }} Slot */
-  /** @typedef {Record<string, Slot | null>} Slots */
-  /** @typedef {{ likeCleaner: boolean }} Settings */
-  /** @typedef {{ uri: string, name: string }} Playlist */
-
-  // ─── Config ───
-  // Theme: --spice-button-disabled equals text; --spice-misc is #000. Never use either.
-
-  const CONFIG = {
-    title: "Crate Digger",
-    slotKeys: ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"],
-    storage: {
-      slots: "cratedigger:slots",
-      settings: "cratedigger:settings",
-    },
-    timing: {
-      readyPollMs: READY_POLL_MS,
-      mountRetryMs: 400,
-      pickerBlurMs: 150, // input blur vs list mousedown
-      hudFlashMs: 400,
-    },
-    library: {
-      pageSize: 10000,
-      playlistFilter: "2", // Spotify LibraryAPI: playlists
-    },
-    selectors: {
-      seekBar: ".playback-bar",
-      progressBar: '[data-testid="playback-progressbar"]',
-      playerControls: ".player-controls",
-      nowPlayingBar: ".Root__now-playing-bar",
-      nowPlayingWidget: ".main-nowPlayingWidget-nowPlaying",
-      likeButton: ".control-button-heart, [data-testid='add-button']",
-    },
-    theme: {
-      surface: "var(--spice-card, #16161e)",
-      text: "var(--spice-subtext, #c0caf5)",
-      muted: "#565f89", // not --spice-misc (black) or --spice-button-disabled (same as text)
-      hover: "var(--spice-tab-active, #27384e)",
-      border: "var(--spice-notification, #414868)",
-      accent: "var(--spice-button, #2ac3de)",
-      radius: "4px",
-    },
-    picker: {
-      zIndex: 100000, // above Spotify's playbar / modal chrome
-      gapPx: 4,
-      viewportPadPx: 8,
-      minHeightPx: 140,
-      maxHeightPx: 280,
-      clearWidthPx: 32,
-    },
-    hud: {
-      id: "cratedigger-hud",
-      chipMaxWidth: "9.5em",
-      fontSize: "11px",
-      unboundLabel: "—",
-      chipGap: "4px",
-      chipPadding: "2px 6px",
-      barGap: "2px 4px",
-      barPadding: "2px 8px 4px",
-    },
-    membership: {
-      id: "cratedigger-membership",
-      fontSize: "12px",
-      padding: "0 4px",
-    },
-    ui: {
-      fieldPadding: "6px 8px",
-      controlGap: "6px",
-      rowGap: "12px",
-      rowMargin: "8px 0",
-      sectionGap: "16px",
-      hintSize: "12px",
-      modalMaxHeight: "70vh",
-      checkboxNudge: "3px",
-      slotLabelWidth: "1.5em",
-      slotLabelNudge: "6px",
-      listItemPadding: "8px",
-      listPad: "4px 0",
-      toggleGap: "10px",
-      countGap: "12px",
-      pickerShadow: "0 12px 32px rgba(0, 0, 0, 0.55)",
-    },
+  const TITLE = "Crate Digger";
+  const SLOT_KEYS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"];
+  const STORAGE_SLOTS = "cratedigger:slots";
+  const STORAGE_SETTINGS = "cratedigger:settings";
+  const THEME = {
+    surface: "var(--spice-card, #16161e)",
+    text: "var(--spice-subtext, #c0caf5)",
+    muted: "#565f89",
+    hover: "var(--spice-tab-active, #27384e)",
+    border: "var(--spice-notification, #414868)",
+    accent: "var(--spice-button, #2ac3de)",
+    radius: "4px",
   };
 
-  const SLOT_KEYS = CONFIG.slotKeys;
-  const THEME = CONFIG.theme;
-
-  /** @type {Map<string, Set<string>>} */
   const playlistTracks = new Map();
   let closeActivePicker = () => {};
-  /** @type {HTMLSpanElement | null} */
   let membershipEl = null;
-  let membershipGen = 0; // drop stale membership checks after a fast skip
+  let membershipGen = 0;
 
-  /**
-   * @param {string} tag
-   * @param {{ style?: Partial<CSSStyleDeclaration>, text?: string, children?: Node[], dataset?: Record<string, string>, on?: Record<string, EventListener> } & Record<string, unknown>} [opts]
-   */
   function el(tag, opts = {}) {
     const node = document.createElement(tag);
     const { style, text, children, dataset, on, ...props } = opts;
@@ -158,15 +76,12 @@
     return "[" + key + "]";
   }
 
-  // ─── Storage ───
   // LocalStorageAPI is per Spotify account. LocalStorage is the unscoped fallback.
-
   function storageGet(key) {
     try {
       const api = Platform.LocalStorageAPI;
       const raw = api?.getItem ? api.getItem(key) : LocalStorage.get(key);
       if (raw == null || raw === "") return null;
-      // LocalStorageAPI may already return an object; LocalStorage is always a string.
       return typeof raw === "string" ? JSON.parse(raw) : raw;
     } catch (err) {
       console.error("cratedigger: storageGet", key, err);
@@ -183,28 +98,26 @@
   }
 
   function loadSettings() {
-    const parsed = storageGet(CONFIG.storage.settings);
+    const parsed = storageGet(STORAGE_SETTINGS);
     return { likeCleaner: Boolean(parsed?.likeCleaner) };
   }
 
   function saveSettings(settings) {
-    storageSet(CONFIG.storage.settings, settings);
+    storageSet(STORAGE_SETTINGS, settings);
   }
 
   function loadSlots() {
-    return storageGet(CONFIG.storage.slots) || {};
+    return storageGet(STORAGE_SLOTS) || {};
   }
 
   function saveSlots(slots) {
-    storageSet(CONFIG.storage.slots, slots);
+    storageSet(STORAGE_SLOTS, slots);
     playlistTracks.clear();
     renderHud();
     refreshMembership();
   }
 
-  // ─── Playlists ───
   // RootlistAPI walks folders. Top-level LibraryAPI misses nested playlists.
-
   function playlistName(item) {
     return item.name || item.title || item.uri || "";
   }
@@ -229,8 +142,8 @@
   async function fetchFromLibrary(folderUri) {
     const res = await Platform.LibraryAPI.getContents({
       offset: 0,
-      limit: CONFIG.library.pageSize,
-      filters: [CONFIG.library.playlistFilter],
+      limit: 10000,
+      filters: ["2"],
       folderUri: folderUri || "",
       includeLikedSongs: false,
       includeLocalFiles: false,
@@ -310,29 +223,19 @@
     }
   }
 
-  // ─── Picker ───
   // Native <select> clips inside PopupModal. Dropdown is position:fixed on document.body.
-
   function positionListBelow(list, input) {
     const rect = input.getBoundingClientRect();
-    const spaceBelow = window.innerHeight - rect.bottom - CONFIG.picker.viewportPadPx;
-    const maxHeight = Math.min(
-      CONFIG.picker.maxHeightPx,
-      Math.max(CONFIG.picker.minHeightPx, spaceBelow)
-    );
+    const spaceBelow = window.innerHeight - rect.bottom - 8;
+    const maxHeight = Math.min(280, Math.max(140, spaceBelow));
     Object.assign(list.style, {
       left: rect.left + "px",
       width: rect.width + "px",
-      top: rect.bottom + CONFIG.picker.gapPx + "px",
+      top: rect.bottom + 4 + "px",
       maxHeight: maxHeight + "px",
     });
   }
 
-  /**
-   * @param {Playlist[]} playlists
-   * @param {Slot | null | undefined} current
-   * @param {(slot: Slot | null) => void} onChange
-   */
   function createPicker(playlists, current, onChange) {
     const input = fieldStyle(
       el("input", {
@@ -340,7 +243,7 @@
         autocomplete: "off",
         placeholder: "Search playlists…",
         value: current?.name || "",
-        style: { flex: "1", minWidth: "0", padding: CONFIG.ui.fieldPadding, colorScheme: "dark" }, // native search chrome
+        style: { flex: "1", minWidth: "0", padding: "6px 8px", colorScheme: "dark" },
       })
     );
 
@@ -349,7 +252,7 @@
         type: "button",
         text: "×",
         title: "Unbind",
-        style: { width: CONFIG.picker.clearWidthPx + "px", cursor: "pointer" },
+        style: { width: "32px", cursor: "pointer" },
       })
     );
 
@@ -358,10 +261,10 @@
         style: {
           display: "none",
           position: "fixed",
-          zIndex: String(CONFIG.picker.zIndex),
+          zIndex: "100000",
           overflowY: "auto",
-          padding: CONFIG.ui.listPad,
-          boxShadow: CONFIG.ui.pickerShadow,
+          padding: "4px 0",
+          boxShadow: "0 12px 32px rgba(0, 0, 0, 0.55)",
         },
       })
     );
@@ -392,12 +295,12 @@
       list.appendChild(
         el("div", {
           text: matches.length + " playlist" + (matches.length === 1 ? "" : "s"),
-          style: { padding: "4px 8px", color: THEME.muted, fontSize: CONFIG.ui.hintSize },
+          style: { padding: "4px 8px", color: THEME.muted, fontSize: "12px" },
         })
       );
       if (matches.length === 0) {
         list.appendChild(
-          el("div", { text: "No matches", style: { padding: CONFIG.ui.listItemPadding, color: THEME.muted } })
+          el("div", { text: "No matches", style: { padding: "8px", color: THEME.muted } })
         );
         return;
       }
@@ -410,7 +313,7 @@
             display: "block",
             width: "100%",
             textAlign: "left",
-            padding: CONFIG.ui.listItemPadding,
+            padding: "8px",
             border: "none",
             background: selected ? THEME.hover : "transparent",
             color: THEME.text,
@@ -433,7 +336,7 @@
     }
 
     function showList() {
-      closeActivePicker(); // one dropdown at a time
+      closeActivePicker();
       const typing = input.value !== (current?.name || "");
       renderList(typing ? input.value : "");
       document.body.appendChild(list);
@@ -454,7 +357,7 @@
       setTimeout(() => {
         hideList();
         input.value = current?.name || "";
-      }, CONFIG.timing.pickerBlurMs);
+      }, 150);
     });
     clear.addEventListener("click", () => {
       setBound(null);
@@ -465,7 +368,7 @@
       style: { flex: "1", minWidth: "0" },
       children: [
         el("div", {
-          style: { display: "flex", gap: CONFIG.ui.controlGap },
+          style: { display: "flex", gap: "6px" },
           children: [input, clear],
         }),
       ],
@@ -476,7 +379,7 @@
     const box = el("input", {
       type: "checkbox",
       checked: loadSettings().likeCleaner,
-      style: { marginTop: CONFIG.ui.checkboxNudge },
+      style: { marginTop: "3px" },
     });
     box.addEventListener("change", () => {
       saveSettings({ ...loadSettings(), likeCleaner: box.checked });
@@ -485,8 +388,8 @@
       style: {
         display: "flex",
         alignItems: "flex-start",
-        gap: CONFIG.ui.toggleGap,
-        marginBottom: CONFIG.ui.sectionGap,
+        gap: "10px",
+        marginBottom: "16px",
         cursor: "pointer",
       },
       children: [
@@ -496,7 +399,7 @@
             el("div", { text: "Like cleaner", style: { fontWeight: "600" } }),
             el("div", {
               text: "Unlike after sorting a liked track into a playlist",
-              style: { color: THEME.muted, fontSize: CONFIG.ui.hintSize },
+              style: { color: THEME.muted, fontSize: "12px" },
             }),
           ],
         }),
@@ -506,13 +409,13 @@
 
   function createSlotRow(key, playlists, current) {
     return el("div", {
-      style: { display: "flex", alignItems: "flex-start", gap: CONFIG.ui.rowGap, margin: CONFIG.ui.rowMargin },
+      style: { display: "flex", alignItems: "flex-start", gap: "12px", margin: "8px 0" },
       children: [
         el("span", {
           text: key,
           style: {
-            width: CONFIG.ui.slotLabelWidth,
-            marginTop: CONFIG.ui.slotLabelNudge,
+            width: "1.5em",
+            marginTop: "6px",
             fontWeight: "700",
             fontVariantNumeric: "tabular-nums",
           },
@@ -529,19 +432,19 @@
   async function openSettings() {
     closeActivePicker();
     const root = el("div", {
-      style: { color: THEME.text, padding: "4px 0", maxHeight: CONFIG.ui.modalMaxHeight, overflowY: "auto" },
+      style: { color: THEME.text, padding: "4px 0", maxHeight: "70vh", overflowY: "auto" },
     });
     root.appendChild(
       el("p", {
         text: "Type to search. Number key adds to that playlist. Shift+number adds and skips.",
-        style: { color: THEME.muted, marginBottom: CONFIG.ui.sectionGap },
+        style: { color: THEME.muted, marginBottom: "16px" },
       })
     );
     root.appendChild(createLikeCleanerToggle());
     const loading = el("p", { text: "Loading playlists…" });
     root.appendChild(loading);
 
-    PopupModal.display({ title: CONFIG.title, content: root, isLarge: true });
+    PopupModal.display({ title: TITLE, content: root, isLarge: true });
 
     const slots = loadSlots();
     const playlists = await fetchWritablePlaylists();
@@ -549,7 +452,7 @@
     root.appendChild(
       el("p", {
         text: playlists.length + " playlists",
-        style: { color: THEME.muted, marginBottom: CONFIG.ui.countGap },
+        style: { color: THEME.muted, marginBottom: "12px" },
       })
     );
     for (const key of SLOT_KEYS) {
@@ -557,9 +460,7 @@
     }
   }
 
-  // ─── Keys ───
   // Left/Right: stock Spotify shortcuts are broken on Linux.
-
   function bindPrevent(trap, combo, handler) {
     trap.bind(combo, (event) => {
       event.preventDefault();
@@ -583,19 +484,17 @@
     });
   }
 
-  // ─── HUD ───
   // Insert before .player-controls (seek is below them). Inserting before .playback-bar
   // puts the chips between play buttons and the slider.
-
   function findSeekBar() {
     return (
-      document.querySelector(CONFIG.selectors.seekBar) ||
-      document.querySelector(CONFIG.selectors.progressBar)?.closest(CONFIG.selectors.seekBar)
+      document.querySelector(".playback-bar") ||
+      document.querySelector('[data-testid="playback-progressbar"]')?.closest(".playback-bar")
     );
   }
 
   function findHudAnchor() {
-    const controls = document.querySelector(CONFIG.selectors.playerControls);
+    const controls = document.querySelector(".player-controls");
     const seek = findSeekBar();
     if (controls && seek && controls.parentElement === seek.parentElement) {
       const seekFirst = controls.compareDocumentPosition(seek) & Node.DOCUMENT_POSITION_PRECEDING;
@@ -605,14 +504,14 @@
   }
 
   function flashHudSlot(slotKey) {
-    const chip = document.querySelector("#" + CONFIG.hud.id + ' [data-slot="' + slotKey + '"]');
+    const chip = document.querySelector('#cratedigger-hud [data-slot="' + slotKey + '"]');
     if (!chip) return;
     chip.style.background = THEME.hover;
     chip.style.outline = "1px solid " + THEME.accent;
     setTimeout(() => {
       chip.style.background = "transparent";
       chip.style.outline = "none";
-    }, CONFIG.timing.hudFlashMs);
+    }, 400);
   }
 
   function createHudChip(key, slot) {
@@ -624,16 +523,16 @@
       style: {
         display: "inline-flex",
         alignItems: "center",
-        gap: CONFIG.hud.chipGap,
-        maxWidth: CONFIG.hud.chipMaxWidth,
-        padding: CONFIG.hud.chipPadding,
+        gap: "4px",
+        maxWidth: "9.5em",
+        padding: "2px 6px",
         border: "none",
         borderRadius: THEME.radius,
         background: "transparent",
         color: bound ? THEME.text : THEME.muted,
         cursor: "pointer",
         font: "inherit",
-        fontSize: CONFIG.hud.fontSize,
+        fontSize: "11px",
         lineHeight: "1.2",
         whiteSpace: "nowrap",
         overflow: "hidden",
@@ -649,7 +548,7 @@
           },
         }),
         el("span", {
-          text: slot?.name || CONFIG.hud.unboundLabel,
+          text: slot?.name || "—",
           style: { minWidth: "0", overflow: "hidden", textOverflow: "ellipsis" },
         }),
       ],
@@ -657,7 +556,7 @@
   }
 
   function renderHud() {
-    const hud = document.getElementById(CONFIG.hud.id);
+    const hud = document.getElementById("cratedigger-hud");
     if (!hud) return;
     const slots = loadSlots();
     hud.replaceChildren();
@@ -665,18 +564,18 @@
   }
 
   function ensureHud() {
-    let hud = document.getElementById(CONFIG.hud.id);
+    let hud = document.getElementById("cratedigger-hud");
     if (hud) return hud;
     return el("div", {
-      id: CONFIG.hud.id,
+      id: "cratedigger-hud",
       style: {
         display: "flex",
         flexWrap: "wrap",
         justifyContent: "center",
         alignItems: "center",
-        gap: CONFIG.hud.barGap,
+        gap: "2px 4px",
         width: "100%",
-        padding: CONFIG.hud.barPadding,
+        padding: "2px 8px 4px",
         boxSizing: "border-box",
         pointerEvents: "auto",
       },
@@ -687,7 +586,7 @@
     const hud = ensureHud();
     const anchor = findHudAnchor();
     if (!anchor?.parentElement) {
-      setTimeout(mountHud, CONFIG.timing.mountRetryMs);
+      setTimeout(mountHud, 400);
       return;
     }
     if (hud.parentElement !== anchor.parentElement || hud.nextElementSibling !== anchor) {
@@ -697,33 +596,30 @@
   }
 
   function watchNowPlayingBar() {
-    const root = document.querySelector(CONFIG.selectors.nowPlayingBar);
+    const root = document.querySelector(".Root__now-playing-bar");
     if (!root) {
-      setTimeout(watchNowPlayingBar, CONFIG.timing.mountRetryMs);
+      setTimeout(watchNowPlayingBar, 400);
       return;
     }
-    // Spotify rebuilds the playbar on navigation; reattach if the HUD or membership text is orphaned.
     new MutationObserver(() => {
       const anchor = findHudAnchor();
-      const hud = document.getElementById(CONFIG.hud.id);
+      const hud = document.getElementById("cratedigger-hud");
       if (anchor && (!hud || hud.nextElementSibling !== anchor)) mountHud();
       mountMembership();
     }).observe(root, { childList: true, subtree: true });
   }
 
-  // ─── Membership ───
-  // Plain text next to Like. Do not use Playbar.Widget — it clones heart-button classes.
-
+  // Playbar.Widget clones heart-button classes. Plain span after Like instead.
   function mountMembership() {
-    const host = document.querySelector(CONFIG.selectors.nowPlayingWidget);
+    const host = document.querySelector(".main-nowPlayingWidget-nowPlaying");
     if (!host) return null;
     if (!membershipEl) {
       membershipEl = el("span", {
-        id: CONFIG.membership.id,
+        id: "cratedigger-membership",
         style: {
           display: "none",
-          padding: CONFIG.membership.padding,
-          fontSize: CONFIG.membership.fontSize,
+          padding: "0 4px",
+          fontSize: "12px",
           fontWeight: "700",
           fontVariantNumeric: "tabular-nums",
           letterSpacing: "0.02em",
@@ -737,7 +633,7 @@
         },
       });
     }
-    const heart = host.querySelector(CONFIG.selectors.likeButton);
+    const heart = host.querySelector(".control-button-heart, [data-testid='add-button']");
     if (heart) {
       if (membershipEl.previousElementSibling !== heart) heart.after(membershipEl);
     } else if (membershipEl.parentElement !== host) {
@@ -793,7 +689,6 @@
   }
 
   function parseContainsResult(res, trackUri) {
-    // PlaylistAPI.contains is untyped: boolean, boolean[], or { [uri]: boolean }.
     if (Array.isArray(res)) return Boolean(res[0]);
     if (res && typeof res === "object") return Boolean(res[trackUri]);
     return Boolean(res);
@@ -828,7 +723,7 @@
   async function refreshMembership() {
     const node = mountMembership();
     if (!node) {
-      setTimeout(refreshMembership, CONFIG.timing.mountRetryMs);
+      setTimeout(refreshMembership, 400);
       return;
     }
     const gen = ++membershipGen;
@@ -839,7 +734,7 @@
       return;
     }
     const hits = await slotKeysForTrack(trackUri, slots);
-    if (gen !== membershipGen) return; // skipped while this request was in flight
+    if (gen !== membershipGen) return;
     if (!hits.length) {
       hideMembership(node);
       return;
@@ -851,7 +746,7 @@
 
   function registerMenu() {
     if (!Menu?.Item) return;
-    new Menu.Item(CONFIG.title, false, () => openSettings(), "playlist").register();
+    new Menu.Item(TITLE, false, () => openSettings(), "playlist").register();
   }
 
   bindKeys();
