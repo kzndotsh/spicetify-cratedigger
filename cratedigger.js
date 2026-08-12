@@ -47,6 +47,7 @@
     const parsed = storageGet(STORAGE_SETTINGS);
     return {
       enabled: parsed?.enabled !== false,
+      invertShift: Boolean(parsed?.invertShift),
       likeCleaner: Boolean(parsed?.likeCleaner),
     };
   }
@@ -80,8 +81,8 @@
     const trap = Mousetrap;
 
     for (const key of SLOT_KEYS) {
-      bindPrevent(trap, key, () => addCurrentToSlot(key, false));
-      bindPrevent(trap, `shift+${key}`, () => addCurrentToSlot(key, true));
+      bindPrevent(trap, key, () => addCurrentToSlot(key, loadSettings().invertShift));
+      bindPrevent(trap, `shift+${key}`, () => addCurrentToSlot(key, !loadSettings().invertShift));
     }
 
     bindPrevent(trap, "a", () => Player.back());
@@ -370,8 +371,14 @@
 
     const hint = document.createElement("p");
     hint.style.cssText = "color:var(--spice-subtext);margin-bottom:16px";
-    hint.textContent =
-      "Type to search. Number key adds to that playlist. Shift+number adds and skips. A/D previous/next.";
+
+    function setHint() {
+      hint.textContent = loadSettings().invertShift
+        ? "Type to search. Number key adds and skips. Shift+number adds and stays. A/D previous/next."
+        : "Type to search. Number key adds to that playlist. Shift+number adds and skips. A/D previous/next.";
+    }
+
+    setHint();
     root.appendChild(hint);
 
     root.appendChild(
@@ -382,6 +389,18 @@
         (on) => {
           storageSet(STORAGE_SETTINGS, { ...loadSettings(), enabled: on });
           applyEnabled();
+        },
+      ),
+    );
+
+    root.appendChild(
+      settingToggle(
+        "Invert Shift",
+        "Number key adds and skips. Shift+number adds and stays.",
+        loadSettings().invertShift,
+        (on) => {
+          storageSet(STORAGE_SETTINGS, { ...loadSettings(), invertShift: on });
+          setHint();
         },
       ),
     );

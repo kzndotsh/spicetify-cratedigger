@@ -64,6 +64,8 @@ Ignored while typing in an input / textarea / select.
 | `A` / `D` | Previous / next track |
 | `L` | Toggle like |
 
+With **Invert Shift** on, number and Shift+number swap (plain number skips, Shift stays).
+
 Unbound slot or no track → error toast, no skip.
 
 ## Settings
@@ -71,6 +73,8 @@ Unbound slot or no track → error toast, no skip.
 Profile menu → **Crate Digger**. Bind a writable playlist per key. Saved per Spotify account in LocalStorage.
 
 **Enabled** (on by default): keys, HUD, and crate tags. Uncheck to park the extension; the profile menu stays so you can turn it back on.
+
+**Invert Shift** (off by default): number key adds and skips; Shift+number adds and stays.
 
 **Like cleaner** (off by default): after a successful sort into a playlist, unlike the track if it was in Liked Songs.
 
