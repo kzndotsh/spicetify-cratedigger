@@ -1,0 +1,13 @@
+[
+  {
+    "name": "Crate Digger",
+    "description": "Number-key crate digging: dump the current track into bound playlists, with a HUD and like-cleaner.",
+    "preview": "screenshot.png",
+    "main": "cratedigger.js",
+    "readme": "README.md",
+    "authors": [
+      { "name": "kzndotsh", "url": "https://github.com/kzndotsh" }
+    ],
+    "tags": ["playlist", "keyboard", "crate-digging"]
+  }
+]
