@@ -4,88 +4,283 @@
   const { Player, Platform, Mousetrap, LocalStorage, Menu, PopupModal, Playbar, showNotification } =
     Spicetify;
 
+  // Spicetify injects the script before Player/Platform/Mousetrap exist.
+  const READY_POLL_MS = 100;
+
   if (!Player || !Platform || !Mousetrap) {
-    setTimeout(cratedigger, 100);
+    setTimeout(cratedigger, READY_POLL_MS);
     return;
   }
-
-  const STORAGE_KEY = "cratedigger:slots";
-  const SETTINGS_KEY = "cratedigger:settings";
-  const SLOT_KEYS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"];
-  /** @type {Map<string, Set<string>>} */
-  const playlistTracks = new Map();
 
   /** @typedef {{ uri: string, name: string }} Slot */
   /** @typedef {Record<string, Slot | null>} Slots */
   /** @typedef {{ likeCleaner: boolean }} Settings */
+  /** @typedef {{ uri: string, name: string }} Playlist */
+
+  // ─── Config ───
+  // Theme: --spice-button-disabled equals text; --spice-misc is #000. Never use either.
+
+  const CONFIG = {
+    title: "Crate Digger",
+    slotKeys: ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"],
+    storage: {
+      slots: "cratedigger:slots",
+      settings: "cratedigger:settings",
+    },
+    timing: {
+      readyPollMs: READY_POLL_MS,
+      mountRetryMs: 400,
+      pickerBlurMs: 150, // input blur vs list mousedown
+      hudFlashMs: 400,
+    },
+    library: {
+      pageSize: 10000,
+      playlistFilter: "2", // Spotify LibraryAPI: playlists
+    },
+    selectors: {
+      seekBar: ".playback-bar",
+      progressBar: '[data-testid="playback-progressbar"]',
+      playerControls: ".player-controls",
+      nowPlayingBar: ".Root__now-playing-bar",
+    },
+    theme: {
+      surface: "var(--spice-card, #16161e)",
+      text: "var(--spice-subtext, #c0caf5)",
+      muted: "#565f89", // not --spice-misc (black) or --spice-button-disabled (same as text)
+      hover: "var(--spice-tab-active, #27384e)",
+      border: "var(--spice-notification, #414868)",
+      accent: "var(--spice-button, #2ac3de)",
+      radius: "4px",
+    },
+    picker: {
+      zIndex: 100000, // above Spotify's playbar / modal chrome
+      gapPx: 4,
+      viewportPadPx: 8,
+      minHeightPx: 140,
+      maxHeightPx: 280,
+      clearWidthPx: 32,
+    },
+    hud: {
+      id: "cratedigger-hud",
+      chipMaxWidth: "9.5em",
+      fontSize: "11px",
+      unboundLabel: "—",
+      chipGap: "4px",
+      chipPadding: "2px 6px",
+      barGap: "2px 4px",
+      barPadding: "2px 8px 4px",
+    },
+    membership: {
+      iconSize: 16,
+      fontSize: "12px",
+      emptyLabel: "Not in a crate slot",
+      widgetPadding: "0 4px",
+    },
+    ui: {
+      fieldPadding: "6px 8px",
+      controlGap: "6px",
+      rowGap: "12px",
+      rowMargin: "8px 0",
+      sectionGap: "16px",
+      hintSize: "12px",
+      modalMaxHeight: "70vh",
+      checkboxNudge: "3px",
+      slotLabelWidth: "1.5em",
+      slotLabelNudge: "6px",
+      listItemPadding: "8px",
+      listPad: "4px 0",
+      toggleGap: "10px",
+      countGap: "12px",
+      pickerShadow: "0 12px 32px rgba(0, 0, 0, 0.55)",
+    },
+  };
+
+  const SLOT_KEYS = CONFIG.slotKeys;
+  const THEME = CONFIG.theme;
+
+  /** @type {Map<string, Set<string>>} */
+  const playlistTracks = new Map();
+  let closeActivePicker = () => {};
+  /** @type {{ widget: InstanceType<typeof Playbar.Widget>, label: HTMLSpanElement } | null} */
+  let membershipUi = null;
+  let membershipGen = 0; // drop stale membership checks after a fast skip
+
+  /**
+   * @param {string} tag
+   * @param {{ style?: Partial<CSSStyleDeclaration>, text?: string, children?: Node[], dataset?: Record<string, string>, on?: Record<string, EventListener> } & Record<string, unknown>} [opts]
+   */
+  function el(tag, opts = {}) {
+    const node = document.createElement(tag);
+    const { style, text, children, dataset, on, ...props } = opts;
+    if (text != null) node.textContent = text;
+    if (style) Object.assign(node.style, style);
+    if (dataset) Object.assign(node.dataset, dataset);
+    for (const [key, value] of Object.entries(props)) {
+      if (value != null) node[key] = value;
+    }
+    if (on) {
+      for (const [event, handler] of Object.entries(on)) {
+        node.addEventListener(event, handler);
+      }
+    }
+    if (children) for (const child of children) node.appendChild(child);
+    return node;
+  }
+
+  function fieldStyle(node) {
+    Object.assign(node.style, {
+      background: THEME.surface,
+      color: THEME.text,
+      border: "1px solid " + THEME.border,
+      borderRadius: THEME.radius,
+    });
+    return node;
+  }
+
+  function errorMessage(err) {
+    return String(err?.message || err);
+  }
 
   function notify(message, isError) {
     showNotification(message, Boolean(isError));
   }
 
-  /** @returns {Settings} */
-  function loadSettings() {
+  function currentTrackUri() {
+    return Player.data?.item?.uri || "";
+  }
+
+  function itemTrackUri(item) {
+    return item?.uri || item?.itemMetadata?.uri || "";
+  }
+
+  function formatSlotTag(key) {
+    return "[" + key + "]";
+  }
+
+  // ─── Storage ───
+  // LocalStorageAPI is per Spotify account. LocalStorage is the unscoped fallback.
+
+  function storageGet(key) {
     try {
       const api = Platform.LocalStorageAPI;
-      let raw = null;
-      if (api && typeof api.getItem === "function") {
-        raw = api.getItem(SETTINGS_KEY);
-      } else {
-        raw = LocalStorage.get(SETTINGS_KEY);
-      }
-      if (raw == null || raw === "") return { likeCleaner: false };
-      const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-      return { likeCleaner: Boolean(parsed?.likeCleaner) };
-    } catch (e) {
-      console.error("cratedigger: loadSettings", e);
-      return { likeCleaner: false };
+      const raw = api?.getItem ? api.getItem(key) : LocalStorage.get(key);
+      if (raw == null || raw === "") return null;
+      // LocalStorageAPI may already return an object; LocalStorage is always a string.
+      return typeof raw === "string" ? JSON.parse(raw) : raw;
+    } catch (err) {
+      console.error("cratedigger: storageGet", key, err);
+      return null;
     }
   }
 
-  /** @param {Settings} settings */
-  function saveSettings(settings) {
-    if (Platform.LocalStorageAPI && typeof Platform.LocalStorageAPI.setItem === "function") {
-      Platform.LocalStorageAPI.setItem(SETTINGS_KEY, settings);
+  function storageSet(key, value) {
+    if (Platform.LocalStorageAPI?.setItem) {
+      Platform.LocalStorageAPI.setItem(key, value);
       return;
     }
-    LocalStorage.set(SETTINGS_KEY, JSON.stringify(settings));
+    LocalStorage.set(key, JSON.stringify(value));
   }
 
-  /** @returns {Slots} */
+  function loadSettings() {
+    const parsed = storageGet(CONFIG.storage.settings);
+    return { likeCleaner: Boolean(parsed?.likeCleaner) };
+  }
+
+  function saveSettings(settings) {
+    storageSet(CONFIG.storage.settings, settings);
+  }
+
   function loadSlots() {
-    try {
-      const api = Platform.LocalStorageAPI;
-      if (api && typeof api.getItem === "function") {
-        const raw = api.getItem(STORAGE_KEY);
-        if (raw == null || raw === "") return {};
-        return typeof raw === "string" ? JSON.parse(raw) : raw;
-      }
-      const raw = LocalStorage.get(STORAGE_KEY);
-      return raw ? JSON.parse(raw) : {};
-    } catch (e) {
-      console.error("cratedigger: loadSlots", e);
-      return {};
-    }
+    return storageGet(CONFIG.storage.slots) || {};
   }
 
-  /** @param {Slots} slots */
   function saveSlots(slots) {
-    if (Platform.LocalStorageAPI && typeof Platform.LocalStorageAPI.setItem === "function") {
-      Platform.LocalStorageAPI.setItem(STORAGE_KEY, slots);
-    } else {
-      LocalStorage.set(STORAGE_KEY, JSON.stringify(slots));
-    }
-    renderHud();
+    storageSet(CONFIG.storage.slots, slots);
     playlistTracks.clear();
+    renderHud();
     refreshMembership();
   }
 
-  /**
-   * @param {string} slotKey
-   * @param {boolean} skipAfter
-   */
+  // ─── Playlists ───
+  // RootlistAPI walks folders. Top-level LibraryAPI misses nested playlists.
+
+  function playlistName(item) {
+    return item.name || item.title || item.uri || "";
+  }
+
+  function isPlaylistType(type) {
+    return type === "playlist" || type === "playlist-v2";
+  }
+
+  function flattenPlaylists(node, out) {
+    const items = node?.items || node?.rows || (Array.isArray(node) ? node : []);
+    for (const item of items) {
+      if (isPlaylistType(item.type)) {
+        if (item.canAddTo === false) continue;
+        const uri = item.uri || item.link;
+        if (uri) out.push({ uri, name: playlistName(item) });
+      } else if (item.type === "folder") {
+        flattenPlaylists(item, out);
+      }
+    }
+  }
+
+  async function fetchFromLibrary(folderUri) {
+    const res = await Platform.LibraryAPI.getContents({
+      offset: 0,
+      limit: CONFIG.library.pageSize,
+      filters: [CONFIG.library.playlistFilter],
+      folderUri: folderUri || "",
+      includeLikedSongs: false,
+      includeLocalFiles: false,
+    });
+    const out = [];
+    for (const item of res?.items ?? []) {
+      if (item.type === "playlist" && item.canAddTo !== false) {
+        out.push({ uri: item.uri, name: playlistName(item) });
+      } else if (item.type === "folder") {
+        out.push(...(await fetchFromLibrary(item.uri)));
+      }
+    }
+    return out;
+  }
+
+  function dedupePlaylists(playlists) {
+    const byUri = new Map();
+    for (const playlist of playlists) {
+      if (!byUri.has(playlist.uri)) byUri.set(playlist.uri, playlist);
+    }
+    return [...byUri.values()].sort((a, b) =>
+      a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
+    );
+  }
+
+  async function fetchWritablePlaylists() {
+    try {
+      const collected = [];
+      if (Platform.RootlistAPI?.getContents) {
+        flattenPlaylists(await Platform.RootlistAPI.getContents(), collected);
+      } else if (Platform.LibraryAPI?.getContents) {
+        collected.push(...(await fetchFromLibrary("")));
+      } else {
+        notify("Crate Digger: cannot list playlists", true);
+        return [];
+      }
+      return dedupePlaylists(collected);
+    } catch (err) {
+      notify(errorMessage(err), true);
+      return [];
+    }
+  }
+
+  function applyLikeCleaner(message) {
+    if (!loadSettings().likeCleaner || !Player.getHeart()) return message;
+    Player.setHeart(false);
+    return message + " · unliked";
+  }
+
   async function addCurrentToSlot(slotKey, skipAfter) {
-    const trackUri = Player.data?.item?.uri;
+    const trackUri = currentTrackUri();
     if (!trackUri) {
       notify("No track playing", true);
       return;
@@ -105,140 +300,70 @@
     try {
       await Platform.PlaylistAPI.add(slot.uri, [trackUri], { after: "end" });
       playlistTracks.get(slot.uri)?.add(trackUri);
-      let msg = "Added to " + (slot.name || "playlist");
-      if (loadSettings().likeCleaner && Player.getHeart()) {
-        Player.setHeart(false);
-        msg += " · unliked";
-      }
-      notify(msg);
+      notify(applyLikeCleaner("Added to " + (slot.name || "playlist")));
       flashHudSlot(slotKey);
       refreshMembership();
       if (skipAfter) Player.next();
-    } catch (e) {
-      notify(String(e?.message || e), true);
+    } catch (err) {
+      notify(errorMessage(err), true);
     }
   }
 
-  function playlistName(item) {
-    return item.name || item.title || item.uri || "";
-  }
+  // ─── Picker ───
+  // Native <select> clips inside PopupModal. Dropdown is position:fixed on document.body.
 
-  function flattenPlaylists(node, out) {
-    const items = node?.items || node?.rows || (Array.isArray(node) ? node : []);
-    for (const item of items) {
-      const type = item.type;
-      if (type === "playlist" || type === "playlist-v2") {
-        if (item.canAddTo === false) continue;
-        const uri = item.uri || item.link;
-        if (uri) out.push({ uri, name: playlistName(item) });
-      } else if (type === "folder") {
-        flattenPlaylists(item, out);
-      }
-    }
-  }
-
-  async function fetchFromLibrary(folderUri) {
-    const res = await Platform.LibraryAPI.getContents({
-      offset: 0,
-      limit: 10000,
-      filters: ["2"],
-      folderUri: folderUri || "",
-      includeLikedSongs: false,
-      includeLocalFiles: false,
+  function positionListBelow(list, input) {
+    const rect = input.getBoundingClientRect();
+    const spaceBelow = window.innerHeight - rect.bottom - CONFIG.picker.viewportPadPx;
+    const maxHeight = Math.min(
+      CONFIG.picker.maxHeightPx,
+      Math.max(CONFIG.picker.minHeightPx, spaceBelow)
+    );
+    Object.assign(list.style, {
+      left: rect.left + "px",
+      width: rect.width + "px",
+      top: rect.bottom + CONFIG.picker.gapPx + "px",
+      maxHeight: maxHeight + "px",
     });
-    const out = [];
-    for (const item of res?.items ?? []) {
-      if (item.type === "playlist" && item.canAddTo !== false) {
-        out.push({ uri: item.uri, name: playlistName(item) });
-      } else if (item.type === "folder") {
-        out.push(...(await fetchFromLibrary(item.uri)));
-      }
-    }
-    return out;
   }
-
-  async function fetchWritablePlaylists() {
-    try {
-      const collected = [];
-      if (Platform.RootlistAPI?.getContents) {
-        const root = await Platform.RootlistAPI.getContents();
-        flattenPlaylists(root, collected);
-      } else if (Platform.LibraryAPI?.getContents) {
-        collected.push(...(await fetchFromLibrary("")));
-      } else {
-        notify("Crate Digger: cannot list playlists", true);
-        return [];
-      }
-
-      const byUri = new Map();
-      for (const pl of collected) {
-        if (!byUri.has(pl.uri)) byUri.set(pl.uri, pl);
-      }
-      return [...byUri.values()].sort((a, b) =>
-        a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
-      );
-    } catch (e) {
-      notify(String(e?.message || e), true);
-      return [];
-    }
-  }
-
-  const SURFACE = "var(--spice-card, #16161e)";
-  const TEXT = "var(--spice-subtext, #c0caf5)";
-  const MUTED = "#565f89";
-  const HOVER = "var(--spice-tab-active, #27384e)";
-  const BORDER = "var(--spice-notification, #414868)";
-
-  function fieldStyle(el) {
-    el.style.background = SURFACE;
-    el.style.color = TEXT;
-    el.style.border = "1px solid " + BORDER;
-    el.style.borderRadius = "4px";
-  }
-
-  let closeActivePicker = () => {};
 
   /**
-   * @param {Array<{uri: string, name: string}>} playlists
+   * @param {Playlist[]} playlists
    * @param {Slot | null | undefined} current
    * @param {(slot: Slot | null) => void} onChange
    */
   function createPicker(playlists, current, onChange) {
-    const wrap = document.createElement("div");
-    wrap.style.flex = "1";
-    wrap.style.minWidth = "0";
+    const input = fieldStyle(
+      el("input", {
+        type: "search",
+        autocomplete: "off",
+        placeholder: "Search playlists…",
+        value: current?.name || "",
+        style: { flex: "1", minWidth: "0", padding: CONFIG.ui.fieldPadding, colorScheme: "dark" }, // native search chrome
+      })
+    );
 
-    const controls = document.createElement("div");
-    controls.style.display = "flex";
-    controls.style.gap = "6px";
+    const clear = fieldStyle(
+      el("button", {
+        type: "button",
+        text: "×",
+        title: "Unbind",
+        style: { width: CONFIG.picker.clearWidthPx + "px", cursor: "pointer" },
+      })
+    );
 
-    const input = document.createElement("input");
-    input.type = "search";
-    input.autocomplete = "off";
-    input.placeholder = "Search playlists…";
-    input.value = current?.name || "";
-    input.style.flex = "1";
-    input.style.minWidth = "0";
-    input.style.padding = "6px 8px";
-    input.style.colorScheme = "dark";
-    fieldStyle(input);
-
-    const clear = document.createElement("button");
-    clear.type = "button";
-    clear.textContent = "×";
-    clear.title = "Unbind";
-    clear.style.width = "32px";
-    clear.style.cursor = "pointer";
-    fieldStyle(clear);
-
-    const list = document.createElement("div");
-    list.style.display = "none";
-    list.style.position = "fixed";
-    list.style.zIndex = "100000";
-    list.style.overflowY = "auto";
-    list.style.padding = "4px 0";
-    list.style.boxShadow = "0 12px 32px rgba(0, 0, 0, 0.55)";
-    fieldStyle(list);
+    const list = fieldStyle(
+      el("div", {
+        style: {
+          display: "none",
+          position: "fixed",
+          zIndex: String(CONFIG.picker.zIndex),
+          overflowY: "auto",
+          padding: CONFIG.ui.listPad,
+          boxShadow: CONFIG.ui.pickerShadow,
+        },
+      })
+    );
 
     function setBound(slot) {
       current = slot;
@@ -248,67 +373,58 @@
 
     function hideList() {
       list.style.display = "none";
-      if (list.parentNode) list.remove();
+      list.remove();
     }
 
-    function positionList() {
-      const r = input.getBoundingClientRect();
-      const gap = 4;
-      const spaceBelow = window.innerHeight - r.bottom - 8;
-      const maxH = Math.min(280, Math.max(140, spaceBelow));
-      list.style.left = r.left + "px";
-      list.style.width = r.width + "px";
-      list.style.top = r.bottom + gap + "px";
-      list.style.maxHeight = maxH + "px";
+    function matchesQuery(filter) {
+      const query = (filter || "").trim().toLowerCase();
+      if (!query) return playlists;
+      return playlists.filter(
+        (playlist) =>
+          playlist.name.toLowerCase().includes(query) || playlist.uri.toLowerCase().includes(query)
+      );
     }
 
     function renderList(filter) {
       list.replaceChildren();
-      const q = (filter || "").trim().toLowerCase();
-      const matches = q
-        ? playlists.filter(
-            (pl) => pl.name.toLowerCase().includes(q) || pl.uri.toLowerCase().includes(q)
-          )
-        : playlists;
-
-      const count = document.createElement("div");
-      count.style.padding = "4px 8px";
-      count.style.color = MUTED;
-      count.style.fontSize = "12px";
-      count.textContent = matches.length + " playlist" + (matches.length === 1 ? "" : "s");
-      list.appendChild(count);
-
+      const matches = matchesQuery(filter);
+      list.appendChild(
+        el("div", {
+          text: matches.length + " playlist" + (matches.length === 1 ? "" : "s"),
+          style: { padding: "4px 8px", color: THEME.muted, fontSize: CONFIG.ui.hintSize },
+        })
+      );
       if (matches.length === 0) {
-        const empty = document.createElement("div");
-        empty.style.padding = "8px";
-        empty.style.color = MUTED;
-        empty.textContent = "No matches";
-        list.appendChild(empty);
+        list.appendChild(
+          el("div", { text: "No matches", style: { padding: CONFIG.ui.listItemPadding, color: THEME.muted } })
+        );
         return;
       }
-
-      for (const pl of matches) {
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.textContent = pl.name;
-        btn.style.display = "block";
-        btn.style.width = "100%";
-        btn.style.textAlign = "left";
-        btn.style.padding = "8px";
-        btn.style.border = "none";
-        const selected = current?.uri === pl.uri;
-        btn.style.background = selected ? HOVER : "transparent";
-        btn.style.color = TEXT;
-        btn.style.cursor = "pointer";
+      for (const playlist of matches) {
+        const selected = current?.uri === playlist.uri;
+        const btn = el("button", {
+          type: "button",
+          text: playlist.name,
+          style: {
+            display: "block",
+            width: "100%",
+            textAlign: "left",
+            padding: CONFIG.ui.listItemPadding,
+            border: "none",
+            background: selected ? THEME.hover : "transparent",
+            color: THEME.text,
+            cursor: "pointer",
+          },
+        });
         btn.addEventListener("mouseenter", () => {
-          btn.style.background = HOVER;
+          btn.style.background = THEME.hover;
         });
         btn.addEventListener("mouseleave", () => {
-          btn.style.background = current?.uri === pl.uri ? HOVER : "transparent";
+          btn.style.background = current?.uri === playlist.uri ? THEME.hover : "transparent";
         });
         btn.addEventListener("mousedown", (event) => {
-          event.preventDefault();
-          setBound(pl);
+          event.preventDefault(); // keep focus; blur would close the list first
+          setBound(playlist);
           hideList();
         });
         list.appendChild(btn);
@@ -316,176 +432,169 @@
     }
 
     function showList() {
-      closeActivePicker();
+      closeActivePicker(); // one dropdown at a time
       const typing = input.value !== (current?.name || "");
       renderList(typing ? input.value : "");
       document.body.appendChild(list);
       list.style.display = "block";
-      positionList();
+      positionListBelow(list, input);
       closeActivePicker = hideList;
     }
 
     input.addEventListener("focus", showList);
     input.addEventListener("input", () => {
-      if (list.style.display === "none" || !list.parentNode) showList();
+      if (list.style.display === "none" || !list.isConnected) showList();
       else {
         renderList(input.value);
-        positionList();
+        positionListBelow(list, input);
       }
     });
     input.addEventListener("blur", () => {
       setTimeout(() => {
         hideList();
         input.value = current?.name || "";
-      }, 150);
+      }, CONFIG.timing.pickerBlurMs);
     });
     clear.addEventListener("click", () => {
       setBound(null);
       hideList();
     });
 
-    controls.appendChild(input);
-    controls.appendChild(clear);
-    wrap.appendChild(controls);
-    return wrap;
+    return el("div", {
+      style: { flex: "1", minWidth: "0" },
+      children: [
+        el("div", {
+          style: { display: "flex", gap: CONFIG.ui.controlGap },
+          children: [input, clear],
+        }),
+      ],
+    });
+  }
+
+  function createLikeCleanerToggle() {
+    const box = el("input", {
+      type: "checkbox",
+      checked: loadSettings().likeCleaner,
+      style: { marginTop: CONFIG.ui.checkboxNudge },
+    });
+    box.addEventListener("change", () => {
+      saveSettings({ ...loadSettings(), likeCleaner: box.checked });
+    });
+    return el("label", {
+      style: {
+        display: "flex",
+        alignItems: "flex-start",
+        gap: CONFIG.ui.toggleGap,
+        marginBottom: CONFIG.ui.sectionGap,
+        cursor: "pointer",
+      },
+      children: [
+        box,
+        el("span", {
+          children: [
+            el("div", { text: "Like cleaner", style: { fontWeight: "600" } }),
+            el("div", {
+              text: "Unlike after sorting a liked track into a playlist",
+              style: { color: THEME.muted, fontSize: CONFIG.ui.hintSize },
+            }),
+          ],
+        }),
+      ],
+    });
+  }
+
+  function createSlotRow(key, playlists, current) {
+    return el("div", {
+      style: { display: "flex", alignItems: "flex-start", gap: CONFIG.ui.rowGap, margin: CONFIG.ui.rowMargin },
+      children: [
+        el("span", {
+          text: key,
+          style: {
+            width: CONFIG.ui.slotLabelWidth,
+            marginTop: CONFIG.ui.slotLabelNudge,
+            fontWeight: "700",
+            fontVariantNumeric: "tabular-nums",
+          },
+        }),
+        createPicker(playlists, current, (slot) => {
+          const next = loadSlots();
+          next[key] = slot;
+          saveSlots(next);
+        }),
+      ],
+    });
   }
 
   async function openSettings() {
     closeActivePicker();
-    const root = document.createElement("div");
-    root.style.color = TEXT;
-    root.style.padding = "4px 0";
-    root.style.maxHeight = "70vh";
-    root.style.overflowY = "auto";
-
-    const hint = document.createElement("p");
-    hint.textContent =
-      "Type to search. Number key adds to that playlist. Shift+number adds and skips.";
-    hint.style.color = MUTED;
-    hint.style.marginBottom = "16px";
-    root.appendChild(hint);
-
-    const cleaner = document.createElement("label");
-    cleaner.style.display = "flex";
-    cleaner.style.alignItems = "flex-start";
-    cleaner.style.gap = "10px";
-    cleaner.style.marginBottom = "16px";
-    cleaner.style.cursor = "pointer";
-
-    const box = document.createElement("input");
-    box.type = "checkbox";
-    box.checked = loadSettings().likeCleaner;
-    box.style.marginTop = "3px";
-    box.addEventListener("change", () => {
-      saveSettings({ ...loadSettings(), likeCleaner: box.checked });
+    const root = el("div", {
+      style: { color: THEME.text, padding: "4px 0", maxHeight: CONFIG.ui.modalMaxHeight, overflowY: "auto" },
     });
-    cleaner.appendChild(box);
-
-    const cleanerText = document.createElement("span");
-    const cleanerTitle = document.createElement("div");
-    cleanerTitle.textContent = "Like cleaner";
-    cleanerTitle.style.fontWeight = "600";
-    const cleanerHint = document.createElement("div");
-    cleanerHint.textContent = "Unlike after sorting a liked track into a playlist";
-    cleanerHint.style.color = MUTED;
-    cleanerHint.style.fontSize = "12px";
-    cleanerText.appendChild(cleanerTitle);
-    cleanerText.appendChild(cleanerHint);
-    cleaner.appendChild(cleanerText);
-    root.appendChild(cleaner);
-
-    const loading = document.createElement("p");
-    loading.textContent = "Loading playlists…";
+    root.appendChild(
+      el("p", {
+        text: "Type to search. Number key adds to that playlist. Shift+number adds and skips.",
+        style: { color: THEME.muted, marginBottom: CONFIG.ui.sectionGap },
+      })
+    );
+    root.appendChild(createLikeCleanerToggle());
+    const loading = el("p", { text: "Loading playlists…" });
     root.appendChild(loading);
 
-    PopupModal.display({
-      title: "Crate Digger",
-      content: root,
-      isLarge: true,
-    });
+    PopupModal.display({ title: CONFIG.title, content: root, isLarge: true });
 
     const slots = loadSlots();
     const playlists = await fetchWritablePlaylists();
     loading.remove();
-
-    const count = document.createElement("p");
-    count.style.color = MUTED;
-    count.style.marginBottom = "12px";
-    count.textContent = playlists.length + " playlists";
-    root.appendChild(count);
-
+    root.appendChild(
+      el("p", {
+        text: playlists.length + " playlists",
+        style: { color: THEME.muted, marginBottom: CONFIG.ui.countGap },
+      })
+    );
     for (const key of SLOT_KEYS) {
-      const row = document.createElement("div");
-      row.style.display = "flex";
-      row.style.alignItems = "flex-start";
-      row.style.gap = "12px";
-      row.style.margin = "8px 0";
-
-      const label = document.createElement("span");
-      label.textContent = key;
-      label.style.width = "1.5em";
-      label.style.marginTop = "6px";
-      label.style.fontWeight = "700";
-      label.style.fontVariantNumeric = "tabular-nums";
-      row.appendChild(label);
-
-      row.appendChild(
-        createPicker(playlists, slots[key], (slot) => {
-          const next = loadSlots();
-          next[key] = slot;
-          saveSlots(next);
-        })
-      );
-      root.appendChild(row);
+      root.appendChild(createSlotRow(key, playlists, slots[key]));
     }
+  }
+
+  // ─── Keys ───
+  // Left/Right: stock Spotify shortcuts are broken on Linux.
+
+  function bindPrevent(trap, combo, handler) {
+    trap.bind(combo, (event) => {
+      event.preventDefault();
+      handler();
+      return false;
+    });
   }
 
   function bindKeys() {
     const trap = Mousetrap;
     for (const key of SLOT_KEYS) {
-      trap.bind(key, (event) => {
-        event.preventDefault();
-        addCurrentToSlot(key, false);
-        return false;
-      });
-      trap.bind("shift+" + key, (event) => {
-        event.preventDefault();
-        addCurrentToSlot(key, true);
-        return false;
-      });
+      bindPrevent(trap, key, () => addCurrentToSlot(key, false));
+      bindPrevent(trap, "shift+" + key, () => addCurrentToSlot(key, true));
     }
-    trap.bind("left", (event) => {
-      event.preventDefault();
-      Player.back();
-      return false;
-    });
-    trap.bind("right", (event) => {
-      event.preventDefault();
-      Player.next();
-      return false;
-    });
-    trap.bind("l", (event) => {
-      event.preventDefault();
-      const was = Player.getHeart();
-      Player.setHeart(!was);
-      notify(was ? "Unliked" : "Liked");
-      return false;
+    bindPrevent(trap, "left", () => Player.back());
+    bindPrevent(trap, "right", () => Player.next());
+    bindPrevent(trap, "l", () => {
+      const wasLiked = Player.getHeart();
+      Player.setHeart(!wasLiked);
+      notify(wasLiked ? "Unliked" : "Liked");
     });
   }
 
-  const HUD_ID = "cratedigger-hud";
-  const ACCENT = "var(--spice-button, #2ac3de)";
+  // ─── HUD ───
+  // Insert before .player-controls (seek is below them). Inserting before .playback-bar
+  // puts the chips between play buttons and the slider.
 
   function findSeekBar() {
     return (
-      document.querySelector(".playback-bar") ||
-      document.querySelector('[data-testid="playback-progressbar"]')?.closest(".playback-bar")
+      document.querySelector(CONFIG.selectors.seekBar) ||
+      document.querySelector(CONFIG.selectors.progressBar)?.closest(CONFIG.selectors.seekBar)
     );
   }
 
-  /** Top of the center play cluster (controls + seek), so the HUD sits above both. */
   function findHudAnchor() {
-    const controls = document.querySelector(".player-controls");
+    const controls = document.querySelector(CONFIG.selectors.playerControls);
     const seek = findSeekBar();
     if (controls && seek && controls.parentElement === seek.parentElement) {
       const seekFirst = controls.compareDocumentPosition(seek) & Node.DOCUMENT_POSITION_PRECEDING;
@@ -495,81 +604,89 @@
   }
 
   function flashHudSlot(slotKey) {
-    const chip = document.querySelector("#" + HUD_ID + ' [data-slot="' + slotKey + '"]');
+    const chip = document.querySelector("#" + CONFIG.hud.id + ' [data-slot="' + slotKey + '"]');
     if (!chip) return;
-    chip.style.background = HOVER;
-    chip.style.outline = "1px solid " + ACCENT;
+    chip.style.background = THEME.hover;
+    chip.style.outline = "1px solid " + THEME.accent;
     setTimeout(() => {
       chip.style.background = "transparent";
       chip.style.outline = "none";
-    }, 400);
+    }, CONFIG.timing.hudFlashMs);
+  }
+
+  function createHudChip(key, slot) {
+    const bound = Boolean(slot?.uri);
+    return el("button", {
+      type: "button",
+      dataset: { slot: key },
+      title: bound ? "Slot " + key + ": " + slot.name : "Slot " + key + " unbound — click to bind",
+      style: {
+        display: "inline-flex",
+        alignItems: "center",
+        gap: CONFIG.hud.chipGap,
+        maxWidth: CONFIG.hud.chipMaxWidth,
+        padding: CONFIG.hud.chipPadding,
+        border: "none",
+        borderRadius: THEME.radius,
+        background: "transparent",
+        color: bound ? THEME.text : THEME.muted,
+        cursor: "pointer",
+        font: "inherit",
+        fontSize: CONFIG.hud.fontSize,
+        lineHeight: "1.2",
+        whiteSpace: "nowrap",
+        overflow: "hidden",
+      },
+      on: { click: () => openSettings() },
+      children: [
+        el("span", {
+          text: formatSlotTag(key),
+          style: {
+            color: bound ? THEME.accent : THEME.muted,
+            fontWeight: "700",
+            fontVariantNumeric: "tabular-nums",
+          },
+        }),
+        el("span", {
+          text: slot?.name || CONFIG.hud.unboundLabel,
+          style: { minWidth: "0", overflow: "hidden", textOverflow: "ellipsis" },
+        }),
+      ],
+    });
   }
 
   function renderHud() {
-    const hud = document.getElementById(HUD_ID);
+    const hud = document.getElementById(CONFIG.hud.id);
     if (!hud) return;
     const slots = loadSlots();
     hud.replaceChildren();
-    for (const key of SLOT_KEYS) {
-      const slot = slots[key];
-      const chip = document.createElement("button");
-      chip.type = "button";
-      chip.dataset.slot = key;
-      chip.title = slot?.name ? "Slot " + key + ": " + slot.name : "Slot " + key + " unbound — click to bind";
-      chip.style.display = "inline-flex";
-      chip.style.alignItems = "center";
-      chip.style.gap = "4px";
-      chip.style.maxWidth = "9.5em";
-      chip.style.padding = "2px 6px";
-      chip.style.border = "none";
-      chip.style.borderRadius = "4px";
-      chip.style.background = "transparent";
-      chip.style.color = slot?.uri ? TEXT : MUTED;
-      chip.style.cursor = "pointer";
-      chip.style.font = "inherit";
-      chip.style.fontSize = "11px";
-      chip.style.lineHeight = "1.2";
-      chip.style.whiteSpace = "nowrap";
-      chip.style.overflow = "hidden";
+    for (const key of SLOT_KEYS) hud.appendChild(createHudChip(key, slots[key]));
+  }
 
-      const num = document.createElement("span");
-      num.textContent = "[" + key + "]";
-      num.style.color = slot?.uri ? ACCENT : MUTED;
-      num.style.fontWeight = "700";
-      num.style.fontVariantNumeric = "tabular-nums";
-      chip.appendChild(num);
-
-      const name = document.createElement("span");
-      name.textContent = slot?.name || "—";
-      name.style.minWidth = "0";
-      name.style.overflow = "hidden";
-      name.style.textOverflow = "ellipsis";
-      chip.appendChild(name);
-
-      chip.addEventListener("click", () => openSettings());
-      hud.appendChild(chip);
-    }
+  function ensureHud() {
+    let hud = document.getElementById(CONFIG.hud.id);
+    if (hud) return hud;
+    return el("div", {
+      id: CONFIG.hud.id,
+      style: {
+        display: "flex",
+        flexWrap: "wrap",
+        justifyContent: "center",
+        alignItems: "center",
+        gap: CONFIG.hud.barGap,
+        width: "100%",
+        padding: CONFIG.hud.barPadding,
+        boxSizing: "border-box",
+        pointerEvents: "auto",
+      },
+    });
   }
 
   function mountHud() {
-    let hud = document.getElementById(HUD_ID);
-    if (!hud) {
-      hud = document.createElement("div");
-      hud.id = HUD_ID;
-      hud.style.display = "flex";
-      hud.style.flexWrap = "wrap";
-      hud.style.justifyContent = "center";
-      hud.style.alignItems = "center";
-      hud.style.gap = "2px 4px";
-      hud.style.width = "100%";
-      hud.style.padding = "2px 8px 4px";
-      hud.style.boxSizing = "border-box";
-      hud.style.pointerEvents = "auto";
-    }
-
+    const hud = ensureHud();
     const anchor = findHudAnchor();
-    if (!anchor || !anchor.parentElement) {
-      setTimeout(mountHud, 400);
+    if (!anchor?.parentElement) {
+      setTimeout(mountHud, CONFIG.timing.mountRetryMs);
       return;
     }
     if (hud.parentElement !== anchor.parentElement || hud.nextElementSibling !== anchor) {
@@ -578,125 +695,120 @@
     renderHud();
   }
 
-  bindKeys();
-  mountHud();
-
-  (function watchHud() {
-    const root = document.querySelector(".Root__now-playing-bar");
+  function watchNowPlayingBar() {
+    const root = document.querySelector(CONFIG.selectors.nowPlayingBar);
     if (!root) {
-      setTimeout(watchHud, 400);
+      setTimeout(watchNowPlayingBar, CONFIG.timing.mountRetryMs);
       return;
     }
+    // Spotify rebuilds the playbar on navigation; reattach if the HUD is orphaned.
     new MutationObserver(() => {
       const anchor = findHudAnchor();
-      const hud = document.getElementById(HUD_ID);
+      const hud = document.getElementById(CONFIG.hud.id);
       if (anchor && (!hud || hud.nextElementSibling !== anchor)) mountHud();
     }).observe(root, { childList: true, subtree: true });
-  })();
-
-  if (Menu?.Item) {
-    new Menu.Item("Crate Digger", false, () => {
-      openSettings();
-    }, "playlist").register();
   }
 
-  const BLANK_ICON = '<svg width="16" height="16" viewBox="0 0 16 16"></svg>';
-  /** @type {{ widget: InstanceType<typeof Playbar.Widget>, label: HTMLSpanElement } | null} */
-  let membershipUi = null;
-  let membershipGen = 0;
+  // ─── Membership ───
+  // Playbar.Widget sits next to Like. Constructor requires an icon; we strip the SVG and show slot tags.
+
+  function blankWidgetIcon() {
+    const size = CONFIG.membership.iconSize;
+    return '<svg width="' + size + '" height="' + size + '" viewBox="0 0 ' + size + " " + size + '"></svg>';
+  }
 
   function ensureMembershipUi() {
     if (membershipUi) return membershipUi;
     if (!Playbar?.Widget) return null;
-    const widget = new Playbar.Widget("Not in a crate slot", BLANK_ICON, () => {}, false, false);
+    const widget = new Playbar.Widget(CONFIG.membership.emptyLabel, blankWidgetIcon(), () => {}, false, false);
     widget.element.querySelector("svg")?.remove();
-    widget.element.style.width = "auto";
-    widget.element.style.minWidth = "0";
-    widget.element.style.padding = "0 4px";
-    widget.element.style.display = "none";
-    const label = document.createElement("span");
-    label.style.fontVariantNumeric = "tabular-nums";
-    label.style.fontWeight = "700";
-    label.style.fontSize = "12px";
-    label.style.color = ACCENT;
-    label.style.letterSpacing = "0.02em";
+    Object.assign(widget.element.style, {
+      width: "auto",
+      minWidth: "0",
+      padding: CONFIG.membership.widgetPadding,
+      display: "none",
+    });
+    const label = el("span", {
+      style: {
+        fontVariantNumeric: "tabular-nums",
+        fontWeight: "700",
+        fontSize: CONFIG.membership.fontSize,
+        color: THEME.accent,
+        letterSpacing: "0.02em",
+      },
+    });
     widget.element.appendChild(label);
     membershipUi = { widget, label };
     return membershipUi;
   }
 
-  /**
-   * @param {string} playlistUri
-   * @returns {Promise<Set<string>>}
-   */
-  async function loadPlaylistTracks(playlistUri) {
+  function hideMembership(ui) {
+    ui.widget.label = CONFIG.membership.emptyLabel;
+    ui.widget.element.style.display = "none";
+    ui.label.textContent = "";
+  }
+
+  async function collectPlaylistUris(playlistUri) {
     const uris = new Set();
     const api = Platform.PlaylistAPI;
-    if (!api?.getContents) {
-      playlistTracks.set(playlistUri, uris);
-      return uris;
+    if (!api?.getContents) return uris;
+    const res = await api.getContents(playlistUri);
+    for (const item of res?.items || []) {
+      const uri = itemTrackUri(item);
+      if (uri) uris.add(uri);
     }
-    try {
-      const res = await api.getContents(playlistUri);
-      const items = res?.items || [];
-      for (const item of items) {
-        const uri = item.uri || item.itemMetadata?.uri;
-        if (uri) uris.add(uri);
-      }
-      const total = res?.totalLength;
-      const pageSize = res?.limit || items.length;
-      if (total && pageSize && items.length < total) {
-        for (let offset = items.length; offset < total; offset += pageSize) {
-          try {
-            const page = await api.getContents(playlistUri, { offset, limit: pageSize });
-            for (const item of page?.items || []) {
-              const uri = item.uri || item.itemMetadata?.uri;
-              if (uri) uris.add(uri);
-            }
-            if (!(page?.items || []).length) break;
-          } catch {
-            break;
-          }
+    const total = res?.totalLength;
+    const pageSize = res?.limit || (res?.items || []).length;
+    if (!total || !pageSize || (res?.items || []).length >= total) return uris;
+    for (let offset = (res.items || []).length; offset < total; offset += pageSize) {
+      try {
+        const page = await api.getContents(playlistUri, { offset, limit: pageSize });
+        for (const item of page?.items || []) {
+          const uri = itemTrackUri(item);
+          if (uri) uris.add(uri);
         }
+        if (!(page?.items || []).length) break;
+      } catch {
+        break;
       }
-    } catch (e) {
-      console.error("cratedigger: getContents", playlistUri, e);
     }
-    playlistTracks.set(playlistUri, uris);
     return uris;
   }
 
-  /**
-   * @param {string} playlistUri
-   * @param {string} trackUri
-   */
+  async function loadPlaylistTracks(playlistUri) {
+    try {
+      const uris = await collectPlaylistUris(playlistUri);
+      playlistTracks.set(playlistUri, uris);
+      return uris;
+    } catch (err) {
+      console.error("cratedigger: getContents", playlistUri, err);
+      const empty = new Set();
+      playlistTracks.set(playlistUri, empty);
+      return empty;
+    }
+  }
+
+  function parseContainsResult(res, trackUri) {
+    // PlaylistAPI.contains is untyped: boolean, boolean[], or { [uri]: boolean }.
+    if (Array.isArray(res)) return Boolean(res[0]);
+    if (res && typeof res === "object") return Boolean(res[trackUri]);
+    return Boolean(res);
+  }
+
   async function playlistHasTrack(playlistUri, trackUri) {
     const api = Platform.PlaylistAPI;
     if (typeof api?.contains === "function") {
       try {
-        const res = await api.contains(playlistUri, [trackUri]);
-        if (Array.isArray(res)) return Boolean(res[0]);
-        if (res && typeof res === "object") return Boolean(res[trackUri]);
-        return Boolean(res);
-      } catch (e) {
-        console.warn("cratedigger: contains", e);
+        return parseContainsResult(await api.contains(playlistUri, [trackUri]), trackUri);
+      } catch (err) {
+        console.warn("cratedigger: contains", err);
       }
     }
-    let set = playlistTracks.get(playlistUri);
-    if (!set) set = await loadPlaylistTracks(playlistUri);
-    return set.has(trackUri);
+    const cached = playlistTracks.get(playlistUri) || (await loadPlaylistTracks(playlistUri));
+    return cached.has(trackUri);
   }
 
-  async function refreshMembership() {
-    const ui = ensureMembershipUi();
-    if (!ui) return;
-    const gen = ++membershipGen;
-    const trackUri = Player.data?.item?.uri;
-    const slots = loadSlots();
-    if (!trackUri) {
-      ui.widget.element.style.display = "none";
-      return;
-    }
+  async function slotKeysForTrack(trackUri, slots) {
     const hits = [];
     await Promise.all(
       SLOT_KEYS.map(async (key) => {
@@ -705,24 +817,44 @@
         if (await playlistHasTrack(slot.uri, trackUri)) hits.push(key);
       })
     );
-    if (gen !== membershipGen) return;
-    ui.widget.element.querySelector("svg")?.remove();
-    if (!ui.label.isConnected) ui.widget.element.appendChild(ui.label);
     hits.sort((a, b) => SLOT_KEYS.indexOf(a) - SLOT_KEYS.indexOf(b));
-    if (!hits.length) {
-      ui.widget.label = "Not in a crate slot";
-      ui.widget.element.style.display = "none";
-      ui.label.textContent = "";
+    return hits;
+  }
+
+  async function refreshMembership() {
+    const ui = ensureMembershipUi();
+    if (!ui) return;
+    const gen = ++membershipGen;
+    const trackUri = currentTrackUri();
+    const slots = loadSlots();
+    if (!trackUri) {
+      hideMembership(ui);
       return;
     }
-    ui.label.textContent = hits.map((key) => "[" + key + "]").join("");
-    ui.widget.label = "In " + hits.map((key) => "[" + key + "] " + (slots[key]?.name || "")).join(", ");
+    const hits = await slotKeysForTrack(trackUri, slots);
+    if (gen !== membershipGen) return; // skipped while this request was in flight
+    ui.widget.element.querySelector("svg")?.remove();
+    if (!ui.label.isConnected) ui.widget.element.appendChild(ui.label);
+    if (!hits.length) {
+      hideMembership(ui);
+      return;
+    }
+    ui.label.textContent = hits.map(formatSlotTag).join("");
+    ui.widget.label =
+      "In " + hits.map((key) => formatSlotTag(key) + " " + (slots[key]?.name || "")).join(", ");
     ui.widget.element.style.display = "";
   }
 
-  Player.addEventListener("songchange", () => {
-    refreshMembership();
-  });
+  function registerMenu() {
+    if (!Menu?.Item) return;
+    new Menu.Item(CONFIG.title, false, () => openSettings(), "playlist").register();
+  }
+
+  bindKeys();
+  mountHud();
+  watchNowPlayingBar();
+  registerMenu();
+  Player.addEventListener("songchange", () => refreshMembership());
   refreshMembership();
 
   if (!Platform.PlaylistAPI) {

@@ -38,9 +38,11 @@ curl -s -o globals.d.ts https://raw.githubusercontent.com/spicetify/cli/main/glo
 
 Upstream updates irregularly (a few times a year, in bursts). No need to chase it for Player / Mousetrap / PlaylistAPI / Playbar / PopupModal.
 
+Tunables live in `CONFIG` at the top of `cratedigger.js` (theme, selectors, timings, storage keys, HUD). Do not scatter magic numbers.
+
 ## Runtime
 
-IIFE waits until `Spicetify.Player`, `Platform`, and `Mousetrap` exist (100ms poll).
+IIFE waits until `Spicetify.Player`, `Platform`, and `Mousetrap` exist (`CONFIG.timing.readyPollMs`).
 
 | Key | Action |
 | --- | ------ |
