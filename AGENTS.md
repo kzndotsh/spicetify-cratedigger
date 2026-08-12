@@ -17,11 +17,25 @@ Not a custom app. Not Spicetify Creator (deprecated). Not an npm package.
 | ---- | ---- |
 | `cratedigger.js` | The extension. Only file Spotify loads. |
 | `manifest.json` | Marketplace card (`main` = `cratedigger.js`) |
-| `globals.d.ts` | Editor types from spicetify/cli. Not injected. |
+| `globals.d.ts` | Vendored editor types. Spotify does not load this. See below. |
 | `README.md` | User install (Marketplace / manual / Nix) |
 | `screenshot.png` | Marketplace preview (stub until replaced) |
 | `LICENSE` | MIT |
 | `docs/` | Local research/specs. **Gitignored — do not publish.** |
+
+## `globals.d.ts`
+
+Not generated. Not in Spicetify’s user docs. It is a **vendored copy** of:
+
+https://raw.githubusercontent.com/spicetify/cli/main/globals.d.ts
+
+`cratedigger.js` has `/// <reference path="./globals.d.ts" />` so the editor knows the `Spicetify` namespace. Refresh only when you need types for a newer API:
+
+```bash
+curl -s -o globals.d.ts https://raw.githubusercontent.com/spicetify/cli/main/globals.d.ts
+```
+
+Upstream updates irregularly (a few times a year, in bursts). No need to chase it for Player / Mousetrap / PlaylistAPI / Playbar / PopupModal.
 
 ## Runtime
 
@@ -56,7 +70,7 @@ Theme `tokyoNight` / `Night` on the desktop host.
 
 Playlist picker is `position: fixed` on `document.body` (native `<select>` clips). One picker open at a time.
 
-HUD injects as a sibling **before** `.playback-bar`. Membership widget is `Playbar.Widget` next to Like; hidden when the track is in no bound slot.
+HUD injects as a sibling **before** `.player-controls` (or `.playback-bar` if that comes first), so it sits above the whole play cluster — not between play buttons and the seek bar. Membership widget is `Playbar.Widget` next to Like; hidden when the track is in no bound slot.
 
 ## Local desktop (this machine)
 

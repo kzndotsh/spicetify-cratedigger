@@ -483,6 +483,17 @@
     );
   }
 
+  /** Top of the center play cluster (controls + seek), so the HUD sits above both. */
+  function findHudAnchor() {
+    const controls = document.querySelector(".player-controls");
+    const seek = findSeekBar();
+    if (controls && seek && controls.parentElement === seek.parentElement) {
+      const seekFirst = controls.compareDocumentPosition(seek) & Node.DOCUMENT_POSITION_PRECEDING;
+      return seekFirst ? seek : controls;
+    }
+    return controls || seek;
+  }
+
   function flashHudSlot(slotKey) {
     const chip = document.querySelector("#" + HUD_ID + ' [data-slot="' + slotKey + '"]');
     if (!chip) return;
@@ -556,13 +567,13 @@
       hud.style.pointerEvents = "auto";
     }
 
-    const seek = findSeekBar();
-    if (!seek || !seek.parentElement) {
+    const anchor = findHudAnchor();
+    if (!anchor || !anchor.parentElement) {
       setTimeout(mountHud, 400);
       return;
     }
-    if (hud.parentElement !== seek.parentElement || hud.nextElementSibling !== seek) {
-      seek.parentElement.insertBefore(hud, seek);
+    if (hud.parentElement !== anchor.parentElement || hud.nextElementSibling !== anchor) {
+      anchor.parentElement.insertBefore(hud, anchor);
     }
     renderHud();
   }
@@ -577,9 +588,9 @@
       return;
     }
     new MutationObserver(() => {
-      const seek = findSeekBar();
+      const anchor = findHudAnchor();
       const hud = document.getElementById(HUD_ID);
-      if (seek && (!hud || hud.nextElementSibling !== seek)) mountHud();
+      if (anchor && (!hud || hud.nextElementSibling !== anchor)) mountHud();
     }).observe(root, { childList: true, subtree: true });
   })();
 
