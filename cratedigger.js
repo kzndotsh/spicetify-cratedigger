@@ -56,24 +56,8 @@
     return node;
   }
 
-  function errorMessage(err) {
-    return String(err?.message || err);
-  }
-
   function notify(message, isError) {
     showNotification(message, Boolean(isError));
-  }
-
-  function currentTrackUri() {
-    return Player.data?.item?.uri || "";
-  }
-
-  function itemTrackUri(item) {
-    return item?.uri || item?.itemMetadata?.uri || "";
-  }
-
-  function formatSlotTag(key) {
-    return "[" + key + "]";
   }
 
   // LocalStorageAPI is per Spotify account. LocalStorage is the unscoped fallback.
@@ -102,10 +86,6 @@
     return { likeCleaner: Boolean(parsed?.likeCleaner) };
   }
 
-  function saveSettings(settings) {
-    storageSet(STORAGE_SETTINGS, settings);
-  }
-
   function loadSlots() {
     return storageGet(STORAGE_SLOTS) || {};
   }
@@ -118,21 +98,13 @@
   }
 
   // RootlistAPI walks folders. Top-level LibraryAPI misses nested playlists.
-  function playlistName(item) {
-    return item.name || item.title || item.uri || "";
-  }
-
-  function isPlaylistType(type) {
-    return type === "playlist" || type === "playlist-v2";
-  }
-
   function flattenPlaylists(node, out) {
     const items = node?.items || node?.rows || (Array.isArray(node) ? node : []);
     for (const item of items) {
-      if (isPlaylistType(item.type)) {
+      if (item.type === "playlist" || item.type === "playlist-v2") {
         if (item.canAddTo === false) continue;
         const uri = item.uri || item.link;
-        if (uri) out.push({ uri, name: playlistName(item) });
+        if (uri) out.push({ uri, name: item.name || item.title || uri });
       } else if (item.type === "folder") {
         flattenPlaylists(item, out);
       }
@@ -151,22 +123,12 @@
     const out = [];
     for (const item of res?.items ?? []) {
       if (item.type === "playlist" && item.canAddTo !== false) {
-        out.push({ uri: item.uri, name: playlistName(item) });
+        out.push({ uri: item.uri, name: item.name || item.title || item.uri });
       } else if (item.type === "folder") {
         out.push(...(await fetchFromLibrary(item.uri)));
       }
     }
     return out;
-  }
-
-  function dedupePlaylists(playlists) {
-    const byUri = new Map();
-    for (const playlist of playlists) {
-      if (!byUri.has(playlist.uri)) byUri.set(playlist.uri, playlist);
-    }
-    return [...byUri.values()].sort((a, b) =>
-      a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
-    );
   }
 
   async function fetchWritablePlaylists() {
@@ -180,21 +142,21 @@
         notify("Crate Digger: cannot list playlists", true);
         return [];
       }
-      return dedupePlaylists(collected);
+      const byUri = new Map();
+      for (const playlist of collected) {
+        if (!byUri.has(playlist.uri)) byUri.set(playlist.uri, playlist);
+      }
+      return [...byUri.values()].sort((a, b) =>
+        a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
+      );
     } catch (err) {
-      notify(errorMessage(err), true);
+      notify(String(err?.message || err), true);
       return [];
     }
   }
 
-  function applyLikeCleaner(message) {
-    if (!loadSettings().likeCleaner || !Player.getHeart()) return message;
-    Player.setHeart(false);
-    return message + " · unliked";
-  }
-
   async function addCurrentToSlot(slotKey, skipAfter) {
-    const trackUri = currentTrackUri();
+    const trackUri = Player.data?.item?.uri || "";
     if (!trackUri) {
       notify("No track playing", true);
       return;
@@ -214,12 +176,17 @@
     try {
       await Platform.PlaylistAPI.add(slot.uri, [trackUri], { after: "end" });
       playlistTracks.get(slot.uri)?.add(trackUri);
-      notify(applyLikeCleaner("Added to " + (slot.name || "playlist")));
+      let message = "Added to " + (slot.name || "playlist");
+      if (loadSettings().likeCleaner && Player.getHeart()) {
+        Player.setHeart(false);
+        message += " · unliked";
+      }
+      notify(message);
       flashHudSlot(slotKey);
       refreshMembership();
       if (skipAfter) Player.next();
     } catch (err) {
-      notify(errorMessage(err), true);
+      notify(String(err?.message || err), true);
     }
   }
 
@@ -382,7 +349,7 @@
       style: { marginTop: "3px" },
     });
     box.addEventListener("change", () => {
-      saveSettings({ ...loadSettings(), likeCleaner: box.checked });
+      storageSet(STORAGE_SETTINGS, { ...loadSettings(), likeCleaner: box.checked });
     });
     return el("label", {
       style: {
@@ -486,16 +453,11 @@
 
   // Insert before .player-controls (seek is below them). Inserting before .playback-bar
   // puts the chips between play buttons and the slider.
-  function findSeekBar() {
-    return (
-      document.querySelector(".playback-bar") ||
-      document.querySelector('[data-testid="playback-progressbar"]')?.closest(".playback-bar")
-    );
-  }
-
   function findHudAnchor() {
     const controls = document.querySelector(".player-controls");
-    const seek = findSeekBar();
+    const seek =
+      document.querySelector(".playback-bar") ||
+      document.querySelector('[data-testid="playback-progressbar"]')?.closest(".playback-bar");
     if (controls && seek && controls.parentElement === seek.parentElement) {
       const seekFirst = controls.compareDocumentPosition(seek) & Node.DOCUMENT_POSITION_PRECEDING;
       return seekFirst ? seek : controls;
@@ -540,7 +502,7 @@
       on: { click: () => openSettings() },
       children: [
         el("span", {
-          text: formatSlotTag(key),
+          text: "[" + key + "]",
           style: {
             color: bound ? THEME.accent : THEME.muted,
             fontWeight: "700",
@@ -642,19 +604,13 @@
     return membershipEl;
   }
 
-  function hideMembership(node) {
-    node.title = "";
-    node.textContent = "";
-    node.style.display = "none";
-  }
-
   async function collectPlaylistUris(playlistUri) {
     const uris = new Set();
     const api = Platform.PlaylistAPI;
     if (!api?.getContents) return uris;
     const res = await api.getContents(playlistUri);
     for (const item of res?.items || []) {
-      const uri = itemTrackUri(item);
+      const uri = item?.uri || item?.itemMetadata?.uri || "";
       if (uri) uris.add(uri);
     }
     const total = res?.totalLength;
@@ -664,7 +620,7 @@
       try {
         const page = await api.getContents(playlistUri, { offset, limit: pageSize });
         for (const item of page?.items || []) {
-          const uri = itemTrackUri(item);
+          const uri = item?.uri || item?.itemMetadata?.uri || "";
           if (uri) uris.add(uri);
         }
         if (!(page?.items || []).length) break;
@@ -688,17 +644,14 @@
     }
   }
 
-  function parseContainsResult(res, trackUri) {
-    if (Array.isArray(res)) return Boolean(res[0]);
-    if (res && typeof res === "object") return Boolean(res[trackUri]);
-    return Boolean(res);
-  }
-
   async function playlistHasTrack(playlistUri, trackUri) {
     const api = Platform.PlaylistAPI;
     if (typeof api?.contains === "function") {
       try {
-        return parseContainsResult(await api.contains(playlistUri, [trackUri]), trackUri);
+        const res = await api.contains(playlistUri, [trackUri]);
+        if (Array.isArray(res)) return Boolean(res[0]);
+        if (res && typeof res === "object") return Boolean(res[trackUri]);
+        return Boolean(res);
       } catch (err) {
         console.warn("cratedigger: contains", err);
       }
@@ -727,32 +680,31 @@
       return;
     }
     const gen = ++membershipGen;
-    const trackUri = currentTrackUri();
+    const trackUri = Player.data?.item?.uri || "";
     const slots = loadSlots();
     if (!trackUri) {
-      hideMembership(node);
+      node.title = "";
+      node.textContent = "";
+      node.style.display = "none";
       return;
     }
     const hits = await slotKeysForTrack(trackUri, slots);
     if (gen !== membershipGen) return;
     if (!hits.length) {
-      hideMembership(node);
+      node.title = "";
+      node.textContent = "";
+      node.style.display = "none";
       return;
     }
-    node.textContent = hits.map(formatSlotTag).join("");
-    node.title = "In " + hits.map((key) => formatSlotTag(key) + " " + (slots[key]?.name || "")).join(", ");
+    node.textContent = hits.map((key) => "[" + key + "]").join("");
+    node.title = "In " + hits.map((key) => "[" + key + "] " + (slots[key]?.name || "")).join(", ");
     node.style.display = "";
-  }
-
-  function registerMenu() {
-    if (!Menu?.Item) return;
-    new Menu.Item(TITLE, false, () => openSettings(), "playlist").register();
   }
 
   bindKeys();
   mountHud();
   watchNowPlayingBar();
-  registerMenu();
+  if (Menu?.Item) new Menu.Item(TITLE, false, () => openSettings(), "playlist").register();
   Player.addEventListener("songchange", () => refreshMembership());
   refreshMembership();
 
