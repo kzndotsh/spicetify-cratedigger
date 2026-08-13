@@ -62,6 +62,7 @@ Ignored while typing in an input / textarea / select.
 | `1`–`9`, `0` | Add current track to that slot. Stay. |
 | `Shift+digit` | Add, then skip to next. |
 | `A` / `D` | Previous / next track |
+| Left / Right | Seek back / forward 10 seconds |
 | `L` | Toggle like |
 
 With **Invert Shift** on, number and Shift+number swap (plain number skips, Shift stays).

@@ -11,7 +11,14 @@
 
   const TITLE = "Crate Digger";
   const SLOT_KEYS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"];
-  const KEY_COMBOS = SLOT_KEYS.flatMap((key) => [key, `shift+${key}`]).concat(["a", "d", "l"]);
+  const KEY_COMBOS = SLOT_KEYS.flatMap((key) => [key, `shift+${key}`]).concat([
+    "a",
+    "d",
+    "l",
+    "left",
+    "right",
+  ]);
+  const SEEK_MS = 10000;
   const STORAGE_SLOTS = "cratedigger:slots";
   const STORAGE_SETTINGS = "cratedigger:settings";
 
@@ -64,7 +71,7 @@
     refreshMembership();
   }
 
-  // A/D: prev/next. Stock Left/Right are broken on Linux.
+  // A/D: prev/next. Left/Right: seek (stock arrows are not seek on Linux).
   function bindPrevent(trap, combo, handler) {
     trap.bind(combo, (event) => {
       event.preventDefault();
@@ -87,6 +94,8 @@
 
     bindPrevent(trap, "a", () => Player.back());
     bindPrevent(trap, "d", () => Player.next());
+    bindPrevent(trap, "left", () => Player.skipBack(SEEK_MS));
+    bindPrevent(trap, "right", () => Player.skipForward(SEEK_MS));
 
     bindPrevent(trap, "l", () => {
       const wasLiked = Player.getHeart();
